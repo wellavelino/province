@@ -1,0 +1,6 @@
+state_dir: /srv/province
+ssh_public_keys: [/etc/keys/a.pub]
+tailscale: { tag: "tag:dev" }
+defaults: { storage: local-lvm, bridge: vmbr0, template: "local:vztmpl/debian.tar.zst" }
+hosts:
+  - { name: pve1, node: pve1, endpoint: "https://pve1.example:8006", ssh: pve1 }

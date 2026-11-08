@@ -1,0 +1,132 @@
+// Package env implements the environment lifecycle: create, list, show and
+// destroy. Each environment is one OpenTofu directory under state_dir.
+package env
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/wellavelino/province/internal/config"
+	"github.com/wellavelino/province/internal/hostops"
+	"github.com/wellavelino/province/internal/proxmox"
+	"github.com/wellavelino/province/internal/secrets"
+	"github.com/wellavelino/province/internal/tofu"
+)
+
+// Status of an environment, as recorded in province.json.
+type Status string
+
+const (
+	StatusPlanned         Status = "planned"
+	StatusApplied         Status = "applied"
+	StatusBootstrapped    Status = "bootstrapped"
+	StatusBootstrapFailed Status = "bootstrap_failed"
+)
+
+// MetadataFile is the per-environment record next to the tofu files.
+const MetadataFile = "province.json"
+
+// Metadata is what province knows about an environment.
+type Metadata struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	Host        string `json:"host"`
+	Node        string `json:"node"`
+	VMID        int    `json:"vmid,omitempty"`
+	Status      Status `json:"status"`
+	CPU         int    `json:"cpu"`
+	RAM         int    `json:"ram"`
+	Disk        int    `json:"disk"`
+	Docker      bool   `json:"docker"`
+	Tun         string `json:"tun"`
+	TailscaleIP string `json:"tailscale_ip,omitempty"`
+	Storage     string `json:"storage,omitempty"` // set when a move put the disk elsewhere
+	// ExposePort is published to the internet through Tailscale Funnel
+	// (https://<PublicURL> → localhost:<ExposePort> in the guest).
+	ExposePort int    `json:"expose_port,omitempty"`
+	PublicURL  string `json:"public_url,omitempty"`
+	// TofuOutOfSync: a move re-homed the guest but the tofu state could not
+	// be pointed at it; TofuFix are the steps that finish it by hand.
+	TofuOutOfSync bool      `json:"tofu_out_of_sync,omitempty"`
+	TofuFix       []string  `json:"tofu_fix,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// Tailnet removes devices from the tailnet (Tailscale API).
+type Tailnet interface {
+	DeleteDeviceByHostname(ctx context.Context, hostname string) (deleted bool, err error)
+}
+
+// Manager runs environment operations against one site.
+type Manager struct {
+	Cfg     *config.Config
+	Secrets secrets.Secrets
+	// Tofu returns tofu set up with the host's API token (create, destroy).
+	Tofu func(config.Host) (tofu.Tofu, error)
+	// Client returns the API client of a host; it fails when the host's
+	// token is not set.
+	Client  func(config.Host) (proxmox.Client, error)
+	Host    func(config.Host) hostops.Host
+	Tailnet Tailnet // nil when TS_API_KEY is not set
+	Now     func() time.Time
+	Log     io.Writer // progress and warnings (stderr)
+}
+
+func (m *Manager) dir(name string) string { return filepath.Join(m.Cfg.StateDir, name) }
+
+func (m *Manager) logf(format string, a ...any) {
+	if m.Log != nil {
+		fmt.Fprintf(m.Log, "province: "+format+"\n", a...)
+	}
+}
+
+func readMetadata(dir string) (*Metadata, error) {
+	b, err := os.ReadFile(filepath.Join(dir, MetadataFile))
+	if err != nil {
+		return nil, err
+	}
+	var md Metadata
+	if err := json.Unmarshal(b, &md); err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(dir, MetadataFile), err)
+	}
+	return &md, nil
+}
+
+// writeMetadata replaces province.json atomically.
+func (m *Manager) writeMetadata(dir string, md *Metadata) error {
+	md.UpdatedAt = m.Now().UTC()
+	b, err := json.MarshalIndent(md, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, MetadataFile), append(b, '\n'))
+}
+
+func writeFileAtomic(path string, b []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+func mkdirAll(dir string) error { return os.MkdirAll(dir, 0o700) }

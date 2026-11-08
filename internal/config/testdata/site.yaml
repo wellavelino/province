@@ -1,0 +1,15 @@
+state_dir: ~/infra/province
+user: dev
+ssh_public_keys: [~/.ssh/id_ed25519.pub, /etc/keys/ci.pub]
+tailscale: { tag: "tag:dev", tun: device }
+defaults:
+  host: pve1
+  storage: local-lvm
+  bridge: vmbr0
+  template: local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst
+  cpu: 4
+  ram: 4096
+  disk: 32
+hosts:
+  - { name: pve1, node: pve1, endpoint: "https://pve1.example:8006", insecure: true, ssh: pve1, sudo: false, dump_dir: /var/lib/vz/dump }
+  - { name: pve2, node: pve2, endpoint: "https://pve2.example:8006", ssh: admin@pve2.example, sudo: true, dump_dir: /mnt/dump, token_env: PROVINCE_TOKEN_PVE2 }

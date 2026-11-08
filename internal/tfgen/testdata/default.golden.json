@@ -1,0 +1,75 @@
+{
+  "terraform": {
+    "required_providers": {
+      "proxmox": {
+        "source": "bpg/proxmox",
+        "version": "0.120.0"
+      }
+    }
+  },
+  "provider": {
+    "proxmox": {
+      "endpoint": "https://pve1.example:8006",
+      "insecure": true
+    }
+  },
+  "resource": {
+    "proxmox_virtual_environment_container": {
+      "env": {
+        "node_name": "pve1",
+        "vm_id": 105,
+        "description": "Managed by province (env demo)",
+        "tags": [
+          "province"
+        ],
+        "unprivileged": true,
+        "start_on_boot": true,
+        "started": true,
+        "features": {
+          "nesting": true
+        },
+        "operating_system": {
+          "template_file_id": "local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst",
+          "type": "debian"
+        },
+        "cpu": {
+          "cores": 2
+        },
+        "memory": {
+          "dedicated": 2048,
+          "swap": 512
+        },
+        "disk": {
+          "datastore_id": "local-lvm",
+          "size": 16
+        },
+        "network_interface": [
+          {
+            "name": "eth0",
+            "bridge": "vmbr0"
+          }
+        ],
+        "initialization": {
+          "hostname": "demo",
+          "ip_config": [
+            {
+              "ipv4": {
+                "address": "dhcp"
+              }
+            }
+          ],
+          "user_account": {
+            "keys": [
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHk+/9Qx= dev@laptop"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "vmid": {
+      "value": "${proxmox_virtual_environment_container.env.vm_id}"
+    }
+  }
+}
