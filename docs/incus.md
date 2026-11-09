@@ -28,6 +28,8 @@ incus list box:                          # check that it answers
 
 This stores a client certificate in your Incus client config (`~/.config/incus`). Treat that directory like an SSH key.
 
+If the Incus server is on your tailnet, use its MagicDNS name in the address (`https://box:8443`) so province works from anywhere you are, not just the LAN.
+
 For Incus on the same machine as province, skip this: use the built-in `local` remote (your user needs to be in the `incus-admin` group).
 
 ## Site config
@@ -46,6 +48,8 @@ hosts:
 Hosts without `backend` are Proxmox hosts, so existing site files keep working. Settings of the other backend are refused on a host (for example `token_env` on an Incus host, or `remote` on a Proxmox host). A site with only Incus hosts needs no `defaults.storage`, `defaults.bridge` or `defaults.template`; `defaults.cpu`, `ram`, `disk` and `recipe` apply to both backends.
 
 ## Use it
+
+With the remote added and the host in your site config, the rest of [Getting started](../README.md#getting-started) (Tailscale, then `env create`) is the same as on Proxmox:
 
 ```
 province env create api --host box --recipe go
