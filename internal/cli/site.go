@@ -5,6 +5,7 @@ import (
 	"github.com/wellavelino/province/internal/env"
 	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/hostops"
+	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/move"
 	"github.com/wellavelino/province/internal/proxmox"
 	"github.com/wellavelino/province/internal/secrets"
@@ -24,7 +25,7 @@ func (a *app) loadSite() (*site, error) {
 	}
 	// Register every configured token with the redactor and drop it from
 	// the environment, whether or not this command needs it.
-	for _, h := range cfg.Hosts {
+	for _, h := range cfg.ProxmoxHosts() {
 		a.red.AddToken(a.deps.Getenv(h.TokenEnv))
 		if a.deps.Unsetenv != nil {
 			a.deps.Unsetenv(h.TokenEnv)
@@ -54,9 +55,14 @@ func (a *app) client() func(config.Host) (proxmox.Client, error) {
 
 func (a *app) tofu() func(config.Host) (tofu.Tofu, error) {
 	return func(h config.Host) (tofu.Tofu, error) {
-		t, err := a.token(h)
-		if err != nil {
-			return nil, err
+		// Incus hosts authenticate through the operator's incus remote; tofu
+		// gets no token for them.
+		var t string
+		if !h.IsIncus() {
+			var err error
+			if t, err = a.token(h); err != nil {
+				return nil, err
+			}
 		}
 		tf, err := a.deps.NewTofu(t, a.stderr)
 		if err != nil {
@@ -68,6 +74,10 @@ func (a *app) tofu() func(config.Host) (tofu.Tofu, error) {
 
 func (a *app) host() func(config.Host) hostops.Host {
 	return func(h config.Host) hostops.Host { return a.deps.NewHost(h, a.stderr) }
+}
+
+func (a *app) incus() func(config.Host) incus.Client {
+	return func(h config.Host) incus.Client { return a.deps.NewIncus(h, a.stderr) }
 }
 
 // manager builds an env.Manager.
@@ -86,6 +96,7 @@ func (a *app) managerFor(s *site) *env.Manager {
 		Tofu:    a.tofu(),
 		Client:  a.client(),
 		Host:    a.host(),
+		Incus:   a.incus(),
 		Now:     a.deps.Now,
 		Log:     a.stderr,
 	}

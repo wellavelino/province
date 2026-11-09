@@ -4,20 +4,21 @@
 
 **Dev environments in minutes, for you and your agents.**
 
-Province spins up, moves and publishes development environments on your own Proxmox hosts with one command each, so you and your AI agents can go from idea to running pilot without touching the Proxmox UI.
+Province spins up, moves and publishes development environments on your own Proxmox or Incus hosts with one command each, so you and your AI agents can go from idea to running pilot without touching a hypervisor UI.
 
-Each environment runs in an LXC container, bootstrapped with SSH, Docker and Tailscale.
+Each environment runs in an LXC container, bootstrapped with SSH, Docker and Tailscale, then set up with a [recipe](docs/recipes.md): the packages, tools and dotfiles you list.
 
 **Create. Connect. Move. Destroy.**
 
 ## How it works
 
-- Each environment is declared with OpenTofu (`bpg/proxmox` provider), one state directory per environment.
-- Bootstrap runs through the host (`pct exec`): your user and SSH keys, sudo, optional Docker, and Tailscale with Tailscale SSH.
-- `guest move` moves any existing container or VM between standalone hosts, keeping its MAC address and so its IP.
+- Each environment is declared with OpenTofu, one state directory per environment: `bpg/proxmox` on Proxmox VE hosts, `lxc/incus` on [Incus hosts](docs/incus.md).
+- Bootstrap runs through the host (`pct exec` or `incus exec`): your user and SSH keys, sudo, optional Docker, and Tailscale with Tailscale SSH.
+- A [recipe](docs/recipes.md) then installs what the env needs: apt packages, tools at pinned versions (through mise), your dotfiles. `env provision` applies it again.
+- `guest move` moves any existing container or VM between standalone Proxmox hosts, keeping its MAC address and so its IP.
 - `--expose` publishes an environment's app at a public HTTPS URL through Tailscale Funnel.
 
-Status: v1. LXC only (`--kind vm` is refused). Design notes: [docs/brief.md](docs/brief.md), [docs/plan-v1.md](docs/plan-v1.md). Agent instructions: [skills/province/SKILL.md](skills/province/SKILL.md).
+Status: v1. LXC only (`--kind vm` is refused). Guides: [recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Design notes: [docs/brief.md](docs/brief.md), [docs/plan-v1.md](docs/plan-v1.md). Agent instructions: [skills/province/SKILL.md](skills/province/SKILL.md).
 
 ## Install
 
@@ -26,6 +27,8 @@ go install github.com/wellavelino/province/cmd/province@latest
 ```
 
 ## Prerequisites
+
+The Proxmox items below apply to Proxmox hosts; for Incus hosts see [Incus hosts](docs/incus.md) (the `incus` client and a remote, no token).
 
 - **OpenTofu** (`tofu`) on `PATH` on the machine running province.
 - **Template** on each host: `pveam update && pveam download local debian-13-standard_13.0-1_amd64.tar.zst` (or the one named in `defaults.template`).
@@ -56,11 +59,20 @@ defaults:
   cpu: 2
   ram: 2048    # MiB
   disk: 16     # GiB
-hosts:   # two standalone hosts, each with its own API token
+  recipe: base # applied after bootstrap when --recipe is not given (none: no recipe)
+hosts:   # two standalone Proxmox hosts, each with its own API token, and one Incus host
   - { name: pve1, node: pve1, endpoint: "https://pve1.example:8006", insecure: true, ssh: pve1, sudo: false,
       dump_dir: /var/lib/vz/dump, token_env: PROVINCE_TOKEN_PVE1 }
   - { name: pve2, node: pve2, endpoint: "https://pve2.example:8006", ssh: admin@pve2.example, sudo: true,
       token_env: PROVINCE_TOKEN_PVE2 }
+  - { name: box, backend: incus, remote: box }   # see docs/incus.md
+recipes:  # see docs/recipes.md
+  base:
+    packages: [git, tmux, ripgrep]
+    dotfiles: https://github.com/you/dotfiles
+  go:
+    include: [base]
+    tools: { go: "1.24", golangci-lint: latest }
 ```
 
 ```
@@ -145,20 +157,22 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 
 | Command | What it does |
 |---|---|
-| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port]` | Checks template, bridge and storage, writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan`. |
-| `env create <name> --apply` | Applies, then (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, optional Docker, Tailscale. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Prints `ssh <user>@<name>`. |
-| `env list` | All environments with recorded and live status (one API call per host; an unreachable host, or one whose token variable is unset, shows `unknown`). |
+| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r]` | Checks template, bridge and storage (on Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. |
+| `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, optional Docker, Tailscale. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
+| `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
+| `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). |
 | `env show <name>` | One environment, live status, the ssh line and the public URL if published. |
 | `env expose <name> --port p --yes` | Publishes guest port `p` on the internet through Tailscale Funnel and records `expose_port` and `public_url`. Refuses without `--yes`, when the guest is not running, or when the tailnet does not allow Funnel for the tag. |
 | `env unexpose <name> --yes` | Turns Funnel off in the guest and clears the record. |
 | `env destroy <name> --yes` | `tailscale logout` in the guest, deletes the tailnet node (with `TS_API_KEY`), `tofu destroy`, removes the state dir. |
-| `guest move <vmid> --from h1 --to h2 [--to-vmid n] [--storage s] [--start] --yes` | Read-only preflight (target VMID free on the target; if it is taken, the refusal suggests a `--to-vmid` free on every host, bridges, storage, free space for the full allocated disk size in the target storage; in `dump_dir`, room for the dump estimated from a running container's used bytes (used × 1.1 + 1 GiB), or the allocated size for a VM or a stopped container; on a `dir` or `zfspool` target storage, which usually shares the dump's filesystem, room for the dump estimate plus the allocated size), then: shut down the source, stream `vzdump --stdout --mode stop --compress zstd` through your machine into `dump_dir` on the target, `zstd -t`, restore with the same VMID or `--to-vmid` (MAC kept either way, so DHCP keeps the IP), set `onboot=0` on the source, remove the dump. The target starts only with `--start`, and only after the source is pinned to `onboot=0`. |
+| `guest move <vmid> --from h1 --to h2 [--to-vmid n] [--storage s] [--start] --yes` | Proxmox hosts only (Incus hosts are refused). Read-only preflight (target VMID free on the target; if it is taken, the refusal suggests a `--to-vmid` free on every host, bridges, storage, free space for the full allocated disk size in the target storage; in `dump_dir`, room for the dump estimated from a running container's used bytes (used × 1.1 + 1 GiB), or the allocated size for a VM or a stopped container; on a `dir` or `zfspool` target storage, which usually shares the dump's filesystem, room for the dump estimate plus the allocated size), then: shut down the source, stream `vzdump --stdout --mode stop --compress zstd` through your machine into `dump_dir` on the target, `zstd -t`, restore with the same VMID or `--to-vmid` (MAC kept either way, so DHCP keeps the IP), set `onboot=0` on the source, remove the dump. The target starts only with `--start`, and only after the source is pinned to `onboot=0`. |
 | `guest prune <vmid> --host h [--force] --yes` | Deletes the copy a move left behind (`pct destroy <vmid> --purge` / `qm destroy <vmid> --purge`). Refuses (exit 2, nothing changed) unless the guest is stopped, has `onboot=0`, has no `protection=1` or lock, is not a province env (use `env destroy`), and a guest with the same name exists on another configured host (the moved-copy check; `--force` skips only that check). |
 
 The moved guest keeps the `onboot` value it had in the archive; the source is kept, stopped with `onboot=0`, as a rollback. Once you are happy with the moved copy, remove the source with `province guest prune <vmid> --host <source> --yes`.
 
 ## Recovery
 
+- **Recipe failed**: the env is bootstrapped and on the tailnet; the command exits 1 and names the failing step. Fix the recipe and run `province env provision <name>`.
 - **Bootstrap failed** (`status: bootstrap_failed`): the container and its state are kept. Fix the cause and re-run `province env create <name> --apply`; apply is a no-op if nothing changed and the bootstrap is idempotent.
 - **tofu apply failed**: fix the cause (often a token privilege) and re-run `province env create <name> --apply`.
 - **After a move**: the source copy stays (stopped, `onboot=0`) until you run `province guest prune <vmid> --host <source> --yes`; to roll back instead, stop the new copy and `pct start <vmid>` / `qm start <vmid>` the source.

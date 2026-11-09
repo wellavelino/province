@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -28,6 +29,8 @@ type Config struct {
 	GuestLocales []string `yaml:"guest_locales"`
 	// VMIDStart is the lowest VMID env create picks (default 100).
 	VMIDStart int `yaml:"vmid_start"`
+	// Recipes say what an env has inside, by name (see Recipe).
+	Recipes map[string]Recipe `yaml:"recipes"`
 
 	userFromOS bool // User was not set and came from the OS user
 }
@@ -57,11 +60,33 @@ type Defaults struct {
 	CPU      int    `yaml:"cpu"`
 	RAM      int    `yaml:"ram"`  // MiB
 	Disk     int    `yaml:"disk"` // GiB
+	// Recipe applied by env create when --recipe is not given; empty or
+	// "none" applies none.
+	Recipe string `yaml:"recipe"`
 }
 
-// Host is one standalone Proxmox VE node.
+// Recipe is what an env should have inside, applied after bootstrap and
+// again by env provision. Every step is safe to repeat.
+type Recipe struct {
+	// Include names recipes applied first; this recipe's values win.
+	Include []string `yaml:"include"`
+	// Packages are installed with apt-get.
+	Packages []string `yaml:"packages"`
+	// Tools maps a mise tool name to its version, e.g. go: "1.24".
+	Tools map[string]string `yaml:"tools"`
+	// Dotfiles is an https git URL cloned into ~/.dotfiles; its
+	// install.sh, if any, runs as the user.
+	Dotfiles string `yaml:"dotfiles"`
+	// Run holds commands run as root after everything else.
+	Run []string `yaml:"run"`
+}
+
+// Host is one place envs run: a standalone Proxmox VE node (the default)
+// or an Incus server.
 type Host struct {
-	Name     string `yaml:"name"`
+	Name string `yaml:"name"`
+	// Backend is proxmox (default) or incus.
+	Backend  string `yaml:"backend"`
 	Node     string `yaml:"node"`
 	Endpoint string `yaml:"endpoint"`
 	Insecure bool   `yaml:"insecure"`
@@ -71,9 +96,37 @@ type Host struct {
 	// TokenEnv names the env var holding this host's API token (standalone
 	// hosts each have their own). Default PROXMOX_VE_API_TOKEN.
 	TokenEnv string `yaml:"token_env"`
+
+	// Incus hosts. Remote names an Incus remote already set up with
+	// `incus remote add`; province, tofu and the incus CLI authenticate
+	// through it, so no secret goes through province.
+	Remote      string `yaml:"remote"`
+	Project     string `yaml:"project"`      // default: the remote's default project
+	StoragePool string `yaml:"storage_pool"` // root disk pool (default "default")
+	Network     string `yaml:"network"`      // eth0 network; empty keeps the profile's NIC
+	Image       string `yaml:"image"`        // default images:debian/13
 }
 
+// BackendName is h's backend, proxmox when unset.
+func (h Host) BackendName() string {
+	if h.Backend == "" {
+		return BackendProxmox
+	}
+	return h.Backend
+}
+
+// IsIncus reports whether h is an Incus host.
+func (h Host) IsIncus() bool { return h.Backend == BackendIncus }
+
 const (
+	BackendProxmox = "proxmox"
+	BackendIncus   = "incus"
+	// RecipeNone on the command line or in defaults.recipe applies no recipe.
+	RecipeNone = "none"
+	// DefaultIncusImage and DefaultIncusPool apply to incus hosts.
+	DefaultIncusImage = "images:debian/13"
+	DefaultIncusPool  = "default"
+
 	TunUserspace   = "userspace"
 	TunDevice      = "device"
 	DefaultDumpDir = "/var/lib/vz/dump"
@@ -141,11 +194,26 @@ func (c *Config) applyDefaults() error {
 		c.Defaults.Disk = 16
 	}
 	for i := range c.Hosts {
-		if c.Hosts[i].DumpDir == "" {
-			c.Hosts[i].DumpDir = DefaultDumpDir
+		h := &c.Hosts[i]
+		if h.Backend == "" {
+			h.Backend = BackendProxmox
 		}
-		if c.Hosts[i].TokenEnv == "" {
-			c.Hosts[i].TokenEnv = DefaultTokenEnv
+		if h.Backend != BackendProxmox {
+			if h.Backend == BackendIncus {
+				if h.Image == "" {
+					h.Image = DefaultIncusImage
+				}
+				if h.StoragePool == "" {
+					h.StoragePool = DefaultIncusPool
+				}
+			}
+			continue
+		}
+		if h.DumpDir == "" {
+			h.DumpDir = DefaultDumpDir
+		}
+		if h.TokenEnv == "" {
+			h.TokenEnv = DefaultTokenEnv
 		}
 	}
 	return nil
@@ -186,4 +254,94 @@ func (c *Config) DefaultHost() (Host, error) {
 		return c.Hosts[0], nil
 	}
 	return Host{}, errors.New("several hosts configured and no defaults.host: pass --host")
+}
+
+// ProxmoxHosts returns the Proxmox hosts, in config order.
+func (c *Config) ProxmoxHosts() []Host {
+	var hs []Host
+	for _, h := range c.Hosts {
+		if !h.IsIncus() {
+			hs = append(hs, h)
+		}
+	}
+	return hs
+}
+
+// RecipeName picks the recipe for an env: the flag, else the recorded one,
+// else defaults.recipe. "none" anywhere first in that order means no recipe
+// and returns "".
+func (c *Config) RecipeName(flag, recorded string) string {
+	for _, n := range []string{flag, recorded, c.Defaults.Recipe} {
+		if n == RecipeNone {
+			return ""
+		}
+		if n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+// ResolveRecipe returns recipe name with its includes merged in: includes
+// first, in order, then the recipe itself. Packages and run commands
+// accumulate (a package once), tools and dotfiles from later recipes win.
+func (c *Config) ResolveRecipe(name string) (Recipe, error) {
+	var out Recipe
+	seenPkg := map[string]bool{}
+	done := map[string]bool{}
+	var walk func(n string, stack []string) error
+	walk = func(n string, stack []string) error {
+		if slices.Contains(stack, n) {
+			return fmt.Errorf("recipe %s includes itself (%s)", n, strings.Join(append(stack, n), " -> "))
+		}
+		r, ok := c.Recipes[n]
+		if !ok {
+			if len(stack) == 0 && len(c.Recipes) == 0 {
+				return fmt.Errorf("unknown recipe %q: the site config has no recipes", n)
+			}
+			if len(stack) == 0 {
+				return fmt.Errorf("unknown recipe %q (configured: %s)", n, strings.Join(c.recipeNames(), ", "))
+			}
+			return fmt.Errorf("recipe %s includes unknown recipe %q", stack[len(stack)-1], n)
+		}
+		if done[n] {
+			return nil
+		}
+		for _, inc := range r.Include {
+			if err := walk(inc, append(stack, n)); err != nil {
+				return err
+			}
+		}
+		done[n] = true
+		for _, p := range r.Packages {
+			if !seenPkg[p] {
+				seenPkg[p] = true
+				out.Packages = append(out.Packages, p)
+			}
+		}
+		for t, v := range r.Tools {
+			if out.Tools == nil {
+				out.Tools = map[string]string{}
+			}
+			out.Tools[t] = v
+		}
+		if r.Dotfiles != "" {
+			out.Dotfiles = r.Dotfiles
+		}
+		out.Run = append(out.Run, r.Run...)
+		return nil
+	}
+	if err := walk(name, nil); err != nil {
+		return Recipe{}, err
+	}
+	return out, nil
+}
+
+func (c *Config) recipeNames() []string {
+	names := make([]string, 0, len(c.Recipes))
+	for n := range c.Recipes {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }

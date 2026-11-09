@@ -10,6 +10,7 @@ import (
 	"github.com/wellavelino/province/internal/config"
 	"github.com/wellavelino/province/internal/env"
 	"github.com/wellavelino/province/internal/hostops"
+	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
 	"github.com/wellavelino/province/internal/run"
 	"github.com/wellavelino/province/internal/secrets"
@@ -28,6 +29,7 @@ type Deps struct {
 	NewTofu    func(token string, log io.Writer) (tofu.Tofu, error)
 	NewClient  func(h config.Host, token string) proxmox.Client
 	NewHost    func(h config.Host, log io.Writer) hostops.Host
+	NewIncus   func(h config.Host, log io.Writer) incus.Client
 	NewTailnet func(apiKey, tailnet, tag string) env.Tailnet
 }
 
@@ -73,6 +75,9 @@ func DefaultDeps() Deps {
 		},
 		NewHost: func(h config.Host, log io.Writer) hostops.Host {
 			return &hostops.SSHHost{Runner: local, Target: sshx.Target{Dest: h.SSH, Sudo: h.Sudo}, Log: log}
+		},
+		NewIncus: func(h config.Host, log io.Writer) incus.Client {
+			return &incus.CLI{Runner: local, Remote: h.Remote, Project: h.Project, Log: log}
 		},
 		NewTailnet: func(apiKey, tailnet, tag string) env.Tailnet {
 			return tailscale.New(apiKey, tailnet, tag)

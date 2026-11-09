@@ -35,7 +35,7 @@ func (p Params) validate() error {
 	case p.User == "", p.Hostname == "", len(p.Keys) == 0:
 		return errors.New("bootstrap: user, hostname and keys are required")
 	case !strings.HasPrefix(p.Tag, "tag:"):
-		return fmt.Errorf("bootstrap: tag %q must start with tag:", p.Tag)
+		return fmt.Errorf("bootstrap: tag %q must start with \"tag:\"", p.Tag)
 	case p.Tun != "userspace" && p.Tun != "device":
 		return fmt.Errorf("bootstrap: tun %q must be userspace or device", p.Tun)
 	case p.AuthKey == "":

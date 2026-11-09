@@ -13,6 +13,7 @@ import (
 
 	"github.com/wellavelino/province/internal/config"
 	"github.com/wellavelino/province/internal/hostops"
+	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
 	"github.com/wellavelino/province/internal/secrets"
 	"github.com/wellavelino/province/internal/tofu"
@@ -33,11 +34,15 @@ const MetadataFile = "province.json"
 
 // Metadata is what province knows about an environment.
 type Metadata struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Backend of the env's host: proxmox (also when empty, as in records
+	// written before backends existed) or incus.
+	Backend     string `json:"backend,omitempty"`
 	Host        string `json:"host"`
 	Node        string `json:"node"`
-	VMID        int    `json:"vmid,omitempty"`
+	VMID        int    `json:"vmid,omitempty"`     // Proxmox guests
+	Instance    string `json:"instance,omitempty"` // Incus guests, once created
 	Status      Status `json:"status"`
 	CPU         int    `json:"cpu"`
 	RAM         int    `json:"ram"`
@@ -50,6 +55,8 @@ type Metadata struct {
 	// (https://<PublicURL> → localhost:<ExposePort> in the guest).
 	ExposePort int    `json:"expose_port,omitempty"`
 	PublicURL  string `json:"public_url,omitempty"`
+	// Recipe is the recipe last chosen for the env ("none" for none).
+	Recipe string `json:"recipe,omitempty"`
 	// TofuOutOfSync: a move re-homed the guest but the tofu state could not
 	// be pointed at it; TofuFix are the steps that finish it by hand.
 	TofuOutOfSync bool      `json:"tofu_out_of_sync,omitempty"`
@@ -71,11 +78,33 @@ type Manager struct {
 	Tofu func(config.Host) (tofu.Tofu, error)
 	// Client returns the API client of a host; it fails when the host's
 	// token is not set.
-	Client  func(config.Host) (proxmox.Client, error)
-	Host    func(config.Host) hostops.Host
+	Client func(config.Host) (proxmox.Client, error)
+	Host   func(config.Host) hostops.Host
+	// Incus returns the client of an Incus host.
+	Incus   func(config.Host) incus.Client
 	Tailnet Tailnet // nil when TS_API_KEY is not set
 	Now     func() time.Time
 	Log     io.Writer // progress and warnings (stderr)
+}
+
+// backend returns the env's backend, proxmox for old records.
+func (md *Metadata) backend() string {
+	if md.Backend == "" {
+		return config.BackendProxmox
+	}
+	return md.Backend
+}
+
+// created reports whether the env's guest was created (tofu apply ran).
+func (md *Metadata) created() bool { return md.VMID != 0 || md.Instance != "" }
+
+// guestRef names the env's guest for messages: "vmid 105" or
+// "instance api on remote box".
+func (md *Metadata) guestRef(h config.Host) string {
+	if md.backend() == config.BackendIncus {
+		return fmt.Sprintf("instance %s on remote %s", md.Name, h.Remote)
+	}
+	return fmt.Sprintf("vmid %d", md.VMID)
 }
 
 func (m *Manager) dir(name string) string { return filepath.Join(m.Cfg.StateDir, name) }

@@ -31,6 +31,9 @@ type CreateOpts struct {
 	Disk   int
 	Docker bool
 	Expose int // port published through Tailscale Funnel; 0 keeps the recorded one
+	// Recipe to apply after bootstrap; empty keeps the recorded one, else
+	// defaults.recipe; "none" applies none.
+	Recipe string
 	Apply  bool
 }
 
@@ -39,7 +42,10 @@ type CreateResult struct {
 	Name        string   `json:"name"`
 	Host        string   `json:"host"`
 	Status      Status   `json:"status"`
+	Backend     string   `json:"backend"`
 	VMID        int      `json:"vmid,omitempty"`
+	Instance    string   `json:"instance,omitempty"`
+	Recipe      *Recipe  `json:"recipe,omitempty"`
 	TailscaleIP string   `json:"tailscale_ip,omitempty"`
 	ExposePort  int      `json:"expose_port,omitempty"`
 	PublicURL   string   `json:"public_url,omitempty"`
@@ -90,8 +96,26 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err != nil {
 		return nil, err
 	}
+	if md != nil && md.backend() != host.BackendName() {
+		return nil, errs.Refusedf("env %s was planned on %s as a %s guest, but host %s is now configured with backend %s; destroy it first",
+			o.Name, md.Host, md.backend(), host.Name, host.BackendName())
+	}
+	recorded := ""
+	if md != nil {
+		recorded = md.Recipe
+	}
+	recipe, err := m.recipe(o.Recipe, recorded)
+	if err != nil {
+		return nil, err
+	}
 	if md == nil {
 		md = &Metadata{Name: o.Name, Kind: "lxc", Status: StatusPlanned, CreatedAt: m.Now().UTC()}
+	}
+	md.Backend = host.BackendName()
+	if o.Recipe != "" {
+		md.Recipe = o.Recipe
+	} else if md.Recipe == "" && recipe != nil {
+		md.Recipe = recipe.Name
 	}
 	md.Host, md.Node = host.Name, host.Node
 	md.CPU = pick(o.CPU, md.CPU, m.Cfg.Defaults.CPU)
@@ -101,9 +125,11 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	md.ExposePort = pick(o.Expose, md.ExposePort)
 	md.Tun = m.Cfg.Tailscale.Tun
 
-	api, err := m.Client(host)
-	if err != nil {
-		return nil, err
+	var api proxmox.Client
+	if !host.IsIncus() {
+		if api, err = m.Client(host); err != nil {
+			return nil, err
+		}
 	}
 	tf, err := m.Tofu(host)
 	if err != nil {
@@ -113,20 +139,26 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := m.createPreflight(ctx, api, host); err != nil {
-		return nil, err
-	}
-	// A new env gets a VMID free on every host, so it can later move to any
-	// of them without a clash. Once created, its VMID is fixed.
 	vmid := md.VMID
 	var warnings []string
-	if vmid == 0 {
-		used, w := vmids.Used(ctx, m.Cfg.Hosts, m.Client)
-		for _, s := range w {
-			m.logf("warning: %s", s)
+	if host.IsIncus() {
+		if err := m.incusPreflight(ctx, host); err != nil {
+			return nil, err
 		}
-		warnings = w
-		vmid = vmids.LowestFree(used, m.Cfg.VMIDStart)
+	} else {
+		if err := m.createPreflight(ctx, api, host); err != nil {
+			return nil, err
+		}
+		// A new env gets a VMID free on every Proxmox host, so it can later
+		// move to any of them without a clash. Once created, its VMID is fixed.
+		if vmid == 0 {
+			used, w := vmids.Used(ctx, m.Cfg.ProxmoxHosts(), m.Client)
+			for _, s := range w {
+				m.logf("warning: %s", s)
+			}
+			warnings = w
+			vmid = vmids.LowestFree(used, m.Cfg.VMIDStart)
+		}
 	}
 
 	if err := mkdirAll(dir); err != nil {
@@ -141,7 +173,8 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
-	res := &CreateResult{Name: o.Name, Host: host.Name, Dir: dir, VMID: vmid, ExposePort: md.ExposePort, Warnings: append([]string{}, warnings...)}
+	res := &CreateResult{Name: o.Name, Host: host.Name, Backend: host.BackendName(), Dir: dir, VMID: vmid, Recipe: recipe,
+		ExposePort: md.ExposePort, Warnings: append([]string{}, warnings...)}
 
 	if err := tf.Init(ctx, dir); err != nil {
 		return nil, err
@@ -159,11 +192,18 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := tf.Apply(ctx, dir); err != nil {
 		return nil, fmt.Errorf("%w; fix the cause and re-run `province env create %s --apply`", err, o.Name)
 	}
-	vmid, err = vmidOutput(ctx, tf, dir)
-	if err != nil {
-		return nil, err
+	if host.IsIncus() {
+		if err := instanceOutput(ctx, tf, dir, o.Name); err != nil {
+			return nil, err
+		}
+		md.Instance = o.Name
+	} else {
+		if vmid, err = vmidOutput(ctx, tf, dir); err != nil {
+			return nil, err
+		}
+		md.VMID = vmid
 	}
-	md.VMID, md.Status, md.TailscaleIP = vmid, StatusApplied, ""
+	md.Status, md.TailscaleIP = StatusApplied, ""
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
@@ -174,30 +214,41 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		if werr := m.writeMetadata(dir, md); werr != nil {
 			err = errors.Join(err, werr)
 		}
-		return nil, fmt.Errorf("bootstrap of %s (vmid %d on %s) failed: %w; the container and %s are kept: fix the cause and re-run `province env create %s --apply`",
-			o.Name, vmid, host.Name, err, dir, o.Name)
+		return nil, fmt.Errorf("bootstrap of %s (%s on %s) failed: %w; the container and %s are kept: fix the cause and re-run `province env create %s --apply`",
+			o.Name, md.guestRef(host), host.Name, err, dir, o.Name)
 	}
 	md.Status, md.TailscaleIP, md.PublicURL = StatusBootstrapped, ip, ""
 	if err := m.writeMetadata(dir, md); err != nil {
+		return nil, err
+	}
+	g, err := m.guestFor(host, md)
+	if err != nil {
 		return nil, err
 	}
 	if md.ExposePort != 0 {
 		// The env is bootstrapped and recorded as such; a Funnel failure
 		// only leaves it unpublished. `tailscale funnel --bg` is idempotent.
 		m.logf("publishing %s port %d through Tailscale Funnel", o.Name, md.ExposePort)
-		url, err := m.funnelOn(ctx, m.Host(host), md, md.ExposePort)
+		url, err := m.funnelOn(ctx, g, md, md.ExposePort)
 		if err != nil {
 			// The guest exists, so this is a failure after changes, whatever
 			// the cause; env expose is the retry.
-			return nil, &errs.Error{Kind: errs.Failed, Err: fmt.Errorf("created %s (vmid %d on %s, tailnet IP %s) but did not publish port %d (retry with `province env expose %s --port %d --yes`): %w",
-				o.Name, vmid, host.Name, ip, md.ExposePort, o.Name, md.ExposePort, err)}
+			return nil, &errs.Error{Kind: errs.Failed, Err: fmt.Errorf("created %s (%s on %s, tailnet IP %s) but did not publish port %d (retry with `province env expose %s --port %d --yes`): %w",
+				o.Name, md.guestRef(host), host.Name, ip, md.ExposePort, o.Name, md.ExposePort, err)}
 		}
 		md.PublicURL = url
 		if err := m.writeMetadata(dir, md); err != nil {
 			return nil, err
 		}
 	}
-	res.Status, res.VMID, res.TailscaleIP, res.PublicURL, res.Changes = md.Status, vmid, ip, md.PublicURL, true
+	if recipe != nil {
+		if err := m.applyRecipe(ctx, g, md, recipe); err != nil {
+			// The env is bootstrapped and usable; env provision is the retry.
+			return nil, &errs.Error{Kind: errs.Failed, Err: fmt.Errorf("created %s (%s on %s, tailnet IP %s) but recipe %s failed (fix it, then run `province env provision %s`): %w",
+				o.Name, md.guestRef(host), host.Name, ip, recipe.Name, o.Name, err)}
+		}
+	}
+	res.Status, res.VMID, res.Instance, res.TailscaleIP, res.PublicURL, res.Changes = md.Status, md.VMID, md.Instance, ip, md.PublicURL, true
 	res.SSH = fmt.Sprintf("ssh %s@%s", m.Cfg.User, o.Name)
 	return res, nil
 }
@@ -275,6 +326,44 @@ func (m *Manager) createPreflight(ctx context.Context, c proxmox.Client, h confi
 	return errs.Preflightf("storage %s not found on %s", d.Storage, h.Name)
 }
 
+// incusPreflight checks the remote answers and has the pool and network.
+func (m *Manager) incusPreflight(ctx context.Context, h config.Host) error {
+	c, err := m.incusClient(h)
+	if err != nil {
+		return err
+	}
+	ok, err := c.HasStoragePool(ctx, h.StoragePool)
+	if err != nil {
+		return errs.Preflightf("incus remote %s (host %s) did not answer: %v; check `incus remote list` and `incus info %s:`", h.Remote, h.Name, err, h.Remote)
+	}
+	if !ok {
+		return errs.Preflightf("storage pool %s not found on incus remote %s (see `incus storage list %s:`)", h.StoragePool, h.Remote, h.Remote)
+	}
+	if h.Network != "" {
+		ok, err := c.HasNetwork(ctx, h.Network)
+		if err != nil {
+			return &errs.Error{Kind: errs.Preflight, Err: err}
+		}
+		if !ok {
+			return errs.Preflightf("network %s not found on incus remote %s (see `incus network list %s:`)", h.Network, h.Remote, h.Remote)
+		}
+	}
+	return nil
+}
+
+// instanceOutput checks that tofu created the Incus instance it was asked for.
+func instanceOutput(ctx context.Context, tf tofu.Tofu, dir, name string) error {
+	out, err := tf.Output(ctx, dir)
+	if err != nil {
+		return err
+	}
+	var got string
+	if raw, ok := out["name"]; !ok || json.Unmarshal(raw, &got) != nil || got != name {
+		return fmt.Errorf("tofu output in %s does not name instance %s", dir, name)
+	}
+	return nil
+}
+
 func vmidOutput(ctx context.Context, tf tofu.Tofu, dir string) (int, error) {
 	out, err := tf.Output(ctx, dir)
 	if err != nil {
@@ -289,22 +378,29 @@ func vmidOutput(ctx context.Context, tf tofu.Tofu, dir string) (int, error) {
 
 // bootstrap prepares the container (keyctl, /dev/net/tun) and runs the
 // bootstrap script in it. The auth key travels only on the script's stdin.
+// On Incus, nesting and /dev/net/tun are part of the tofu config already.
 func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, keys []string) (string, error) {
-	host := m.Host(h)
-	var opts []string
-	if md.Docker {
-		opts = append(opts, "--features", "nesting=1,keyctl=1")
-	}
-	if md.Tun == config.TunDevice {
-		opts = append(opts, "--dev0", "/dev/net/tun")
-	}
-	if len(opts) > 0 {
-		if err := host.Set(ctx, proxmox.TypeLXC, md.VMID, opts...); err != nil {
-			return "", err
+	if !h.IsIncus() {
+		host := m.Host(h)
+		var opts []string
+		if md.Docker {
+			opts = append(opts, "--features", "nesting=1,keyctl=1")
 		}
-		if err := host.Reboot(ctx, proxmox.TypeLXC, md.VMID); err != nil {
-			return "", err
+		if md.Tun == config.TunDevice {
+			opts = append(opts, "--dev0", "/dev/net/tun")
 		}
+		if len(opts) > 0 {
+			if err := host.Set(ctx, proxmox.TypeLXC, md.VMID, opts...); err != nil {
+				return "", err
+			}
+			if err := host.Reboot(ctx, proxmox.TypeLXC, md.VMID); err != nil {
+				return "", err
+			}
+		}
+	}
+	g, err := m.guestFor(h, md)
+	if err != nil {
+		return "", err
 	}
 	payload, err := bootstrap.Payload(bootstrap.Params{
 		User: m.Cfg.User, Keys: keys, Hostname: md.Name, Tag: m.Cfg.Tailscale.Tag,
@@ -313,9 +409,9 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 	if err != nil {
 		return "", err
 	}
-	m.logf("bootstrapping %s (vmid %d); this installs packages and takes a few minutes", md.Name, md.VMID)
+	m.logf("bootstrapping %s (%s); this installs packages and takes a few minutes", md.Name, md.guestRef(h))
 	var out bytes.Buffer
-	if err := host.Exec(ctx, md.VMID, bytes.NewReader(payload), &out, "bash", "-s"); err != nil {
+	if err := g.Exec(ctx, bytes.NewReader(payload), &out, "bash", "-s"); err != nil {
 		return "", err
 	}
 	return bootstrap.ParseResult(out.String())
@@ -323,6 +419,17 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 
 // writeMainTF renders the env's tofu config for host and vmid.
 func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, vmid int, keys []string) error {
+	if host.IsIncus() {
+		mainTF, err := tfgen.GenerateIncus(tfgen.Incus{
+			Name: md.Name, Remote: host.Remote, Project: host.Project, Image: host.Image,
+			Pool: host.StoragePool, Network: host.Network, CPU: md.CPU, RAM: md.RAM, Disk: md.Disk,
+			Docker: md.Docker, TunDevice: md.Tun == config.TunDevice,
+		})
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(filepath.Join(dir, "main.tf.json"), mainTF)
+	}
 	storage := md.Storage
 	if storage == "" {
 		storage = m.Cfg.Defaults.Storage

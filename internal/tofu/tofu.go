@@ -35,7 +35,9 @@ type Exec struct {
 
 // New finds tofu on PATH and prepares its environment: baseEnv without any
 // Tailscale secret, plus the Proxmox API token, which reaches tofu only this
-// way (never argv, never a file). log receives tofu's progress output.
+// way (never argv, never a file); an empty token (Incus hosts, which
+// authenticate through the operator's incus remote) sets none. log
+// receives tofu's progress output.
 func New(r run.Runner, lookPath func(string) (string, error), baseEnv []string, token string, log io.Writer) (*Exec, error) {
 	bin, err := lookPath("tofu")
 	if err != nil {
@@ -55,7 +57,10 @@ func New(r run.Runner, lookPath func(string) (string, error), baseEnv []string, 
 			env = append(env, kv)
 		}
 	}
-	env = append(env, secrets.EnvAPIToken+"="+token, "TF_IN_AUTOMATION=1")
+	if token != "" {
+		env = append(env, secrets.EnvAPIToken+"="+token)
+	}
+	env = append(env, "TF_IN_AUTOMATION=1")
 	return &Exec{runner: r, bin: bin, env: env, log: log}, nil
 }
 

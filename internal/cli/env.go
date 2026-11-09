@@ -13,9 +13,48 @@ import (
 )
 
 func (a *app) envCmd() *cobra.Command {
-	c := &cobra.Command{Use: "env", Short: "Manage environments (LXC containers)"}
-	c.AddCommand(a.envCreateCmd(), a.envListCmd(), a.envShowCmd(), a.envDestroyCmd(), a.envExposeCmd(), a.envUnexposeCmd())
+	c := &cobra.Command{Use: "env", Short: "Manage environments (LXC containers on Proxmox or Incus)"}
+	c.AddCommand(a.envCreateCmd(), a.envListCmd(), a.envShowCmd(), a.envDestroyCmd(), a.envExposeCmd(), a.envUnexposeCmd(), a.envProvisionCmd())
 	return c
+}
+
+// guestLabel names a guest in human output: its VMID on Proxmox, its
+// instance name on Incus, "-" before it exists.
+func guestLabel(vmid int, instance string) string {
+	switch {
+	case instance != "":
+		return instance
+	case vmid != 0:
+		return fmt.Sprint(vmid)
+	}
+	return "-"
+}
+
+// guestRef is "vmid 105" or "instance api".
+func guestRef(vmid int, instance string) string {
+	if instance != "" {
+		return "instance " + instance
+	}
+	return fmt.Sprintf("vmid %d", vmid)
+}
+
+func printRecipe(w io.Writer, r *env.Recipe) {
+	if r == nil {
+		return
+	}
+	fmt.Fprintf(w, "recipe %s\n", r.Name)
+	if len(r.Packages) > 0 {
+		fmt.Fprintf(w, "  packages  %s\n", strings.Join(r.Packages, " "))
+	}
+	if len(r.Tools) > 0 {
+		fmt.Fprintf(w, "  tools     %s\n", strings.Join(r.Tools, " "))
+	}
+	if r.Dotfiles != "" {
+		fmt.Fprintf(w, "  dotfiles  %s\n", r.Dotfiles)
+	}
+	for _, c := range r.Run {
+		fmt.Fprintf(w, "  run       %s\n", c)
+	}
 }
 
 func (a *app) envCreateCmd() *cobra.Command {
@@ -47,13 +86,22 @@ func (a *app) envCreateCmd() *cobra.Command {
 					fmt.Fprintf(w, "warning: %s\n", s)
 				}
 				if res.Status == env.StatusBootstrapped {
-					fmt.Fprintf(w, "Created %s on %s (vmid %d), tailnet IP %s\n%s\n", res.Name, res.Host, res.VMID, res.TailscaleIP, res.SSH)
+					fmt.Fprintf(w, "Created %s on %s (%s), tailnet IP %s\n%s\n", res.Name, res.Host, guestRef(res.VMID, res.Instance), res.TailscaleIP, res.SSH)
+					if res.Recipe != nil {
+						fmt.Fprintf(w, "Applied recipe %s\n", res.Recipe.Name)
+					}
 					if res.PublicURL != "" {
 						fmt.Fprintf(w, "Public (internet): %s -> port %d\n", res.PublicURL, res.ExposePort)
 					}
 					return
 				}
-				fmt.Fprintf(w, "%s\nPlanned %s on %s as vmid %d (state in %s). Re-run with --apply to create it.\n", strings.TrimRight(res.Plan, "\n"), res.Name, res.Host, res.VMID, res.Dir)
+				fmt.Fprintf(w, "%s\n", strings.TrimRight(res.Plan, "\n"))
+				printRecipe(w, res.Recipe)
+				as := fmt.Sprintf("vmid %d", res.VMID)
+				if res.Backend == "incus" {
+					as = "instance " + res.Name
+				}
+				fmt.Fprintf(w, "Planned %s on %s as %s (state in %s). Re-run with --apply to create it.\n", res.Name, res.Host, as, res.Dir)
 			})
 		}),
 	}
@@ -65,6 +113,7 @@ func (a *app) envCreateCmd() *cobra.Command {
 	fl.IntVar(&o.Disk, "disk", 0, "root disk in GiB (default: defaults.disk)")
 	fl.BoolVar(&o.Docker, "docker", false, "install Docker and enable keyctl")
 	fl.IntVar(&o.Expose, "expose", 0, "publish this guest port on the public internet through Tailscale Funnel (https://<name>.<tailnet>.ts.net/)")
+	fl.StringVar(&o.Recipe, "recipe", "", "recipe from the site config to apply after bootstrap (default: the recorded one, then defaults.recipe; none for none)")
 	fl.BoolVar(&o.Apply, "apply", false, "apply the plan and bootstrap the guest")
 	return cmd
 }
@@ -89,9 +138,9 @@ func (a *app) envListCmd() *cobra.Command {
 			}
 			return a.emit(listResult{Envs: views}, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(tw, "NAME\tHOST\tVMID\tSTATUS\tLIVE\tTAILNET IP\tPUBLIC URL")
+				fmt.Fprintln(tw, "NAME\tHOST\tGUEST\tSTATUS\tLIVE\tRECIPE\tTAILNET IP\tPUBLIC URL")
 				for _, v := range views {
-					fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n", v.Name, v.Host, v.VMID, v.Status, v.LiveStatus, v.TailscaleIP, v.PublicURL)
+					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Host, guestLabel(v.VMID, v.Instance), v.Status, v.LiveStatus, v.Recipe, v.TailscaleIP, v.PublicURL)
 				}
 				tw.Flush()
 				for _, v := range views {
@@ -119,8 +168,16 @@ func (a *app) envShowCmd() *cobra.Command {
 				return err
 			}
 			return a.emit(v, func(w io.Writer) {
-				fmt.Fprintf(w, "name:         %s\nhost:         %s (node %s)\nvmid:         %d\nstatus:       %s\nlive:         %s\n",
-					v.Name, v.Host, v.Node, v.VMID, v.Status, v.LiveStatus)
+				if v.Instance != "" || v.Backend == "incus" {
+					fmt.Fprintf(w, "name:         %s\nhost:         %s (incus)\ninstance:     %s\nstatus:       %s\nlive:         %s\n",
+						v.Name, v.Host, guestLabel(0, v.Instance), v.Status, v.LiveStatus)
+				} else {
+					fmt.Fprintf(w, "name:         %s\nhost:         %s (node %s)\nvmid:         %d\nstatus:       %s\nlive:         %s\n",
+						v.Name, v.Host, v.Node, v.VMID, v.Status, v.LiveStatus)
+				}
+				if v.Recipe != "" {
+					fmt.Fprintf(w, "recipe:       %s\n", v.Recipe)
+				}
 				fmt.Fprintf(w, "size:         %d cores, %d MiB, %d GiB\ndocker:       %v\ntailnet IP:   %s\n", v.CPU, v.RAM, v.Disk, v.Docker, v.TailscaleIP)
 				if v.SSH != "" {
 					fmt.Fprintf(w, "ssh:          %s\n", v.SSH)
@@ -158,7 +215,7 @@ func (a *app) envDestroyCmd() *cobra.Command {
 				return err
 			}
 			return a.emit(res, func(w io.Writer) {
-				fmt.Fprintf(w, "Destroyed %s (vmid %d on %s)\n", res.Name, res.VMID, res.Host)
+				fmt.Fprintf(w, "Destroyed %s (%s on %s)\n", res.Name, guestRef(res.VMID, res.Instance), res.Host)
 				for _, s := range res.Warnings {
 					fmt.Fprintf(w, "warning: %s\n", s)
 				}
@@ -225,5 +282,30 @@ func (a *app) envUnexposeCmd() *cobra.Command {
 		}),
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm")
+	return cmd
+}
+
+func (a *app) envProvisionCmd() *cobra.Command {
+	var recipe string
+	cmd := &cobra.Command{
+		Use:   "provision <name>",
+		Short: "Apply a recipe (packages, tools, dotfiles) to a running environment again",
+		Args:  exactArgs(1, "name"),
+		RunE: a.action(func(cmd *cobra.Command, args []string) error {
+			m, err := a.manager()
+			if err != nil {
+				return err
+			}
+			res, err := m.Provision(cmd.Context(), args[0], recipe)
+			if err != nil {
+				return err
+			}
+			return a.emit(res, func(w io.Writer) {
+				printRecipe(w, res.Recipe)
+				fmt.Fprintf(w, "Applied recipe %s to %s\n", res.Recipe.Name, res.Name)
+			})
+		}),
+	}
+	cmd.Flags().StringVar(&recipe, "recipe", "", "recipe from the site config (default: the env's recorded recipe, then defaults.recipe)")
 	return cmd
 }

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/wellavelino/province/internal/config"
+	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
 )
 
@@ -31,7 +33,7 @@ func (m *Manager) view(md *Metadata) View {
 	if md.Status == StatusBootstrapped {
 		v.SSH = "ssh " + m.Cfg.User + "@" + md.Name
 	}
-	if md.VMID == 0 {
+	if !md.created() {
 		v.LiveStatus = LiveNotCreated
 	}
 	return v
@@ -62,12 +64,16 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 			return nil, err
 		}
 		views = append(views, m.view(md))
-		if md.VMID != 0 {
+		if md.created() {
 			byHost[md.Host] = append(byHost[md.Host], len(views)-1)
 		}
 	}
 	for hostName, idx := range byHost {
 		h, herr := m.Cfg.HostByName(hostName)
+		if herr == nil && h.IsIncus() {
+			m.listIncus(ctx, h, views, idx)
+			continue
+		}
 		var guests []proxmox.Guest
 		var api proxmox.Client
 		if herr == nil {
@@ -91,4 +97,24 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views, nil
+}
+
+// listIncus sets the live status of views[idx], all on Incus host h, with
+// one instance listing.
+func (m *Manager) listIncus(ctx context.Context, h config.Host, views []View, idx []int) {
+	c, err := m.incusClient(h)
+	var list []incus.Instance
+	if err == nil {
+		list, err = c.Instances(ctx)
+	}
+	for _, i := range idx {
+		switch {
+		case err != nil:
+			views[i].LiveStatus, views[i].Error = LiveUnknown, err.Error()
+		case views[i].backend() != config.BackendIncus:
+			views[i].LiveStatus, views[i].Error = LiveUnknown, "host "+h.Name+" is now an incus host; the env was created on Proxmox"
+		default:
+			views[i].LiveStatus = incusStatus(list, views[i].Name)
+		}
+	}
 }

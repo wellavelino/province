@@ -91,6 +91,11 @@ func (m *Mover) preflight(ctx context.Context, o Opts) (*plan, error) {
 	if err != nil {
 		return nil, &errs.Error{Kind: errs.Refused, Err: err}
 	}
+	for _, h := range []config.Host{from, to} {
+		if h.IsIncus() {
+			return nil, errs.Refusedf("guest move works between Proxmox hosts only; %s is an incus host", h.Name)
+		}
+	}
 	// Both hosts' API tokens must be present before anything is asked.
 	srcAPI, err := m.Client(from)
 	if err != nil {
@@ -139,7 +144,7 @@ func (m *Mover) preflight(ctx context.Context, o Opts) (*plan, error) {
 	}
 	for _, dg := range dstGuests {
 		if dg.VMID == p.targetID {
-			used, _ := vmids.Used(ctx, m.Cfg.Hosts, m.Client)
+			used, _ := vmids.Used(ctx, m.Cfg.ProxmoxHosts(), m.Client)
 			free := vmids.LowestFree(used, max(m.Cfg.VMIDStart, 100))
 			return nil, errs.Preflightf("VMID %d already exists on %s (%s %q); nothing was changed; pass --to-vmid %d (free on every host with a token) to restore it under another id",
 				p.targetID, to.Name, dg.Type, dg.Name, free)

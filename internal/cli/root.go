@@ -68,7 +68,7 @@ func wantsJSON(args []string) bool {
 func (a *app) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "province",
-		Short:         "Create, list, destroy and move environments on Proxmox VE",
+		Short:         "Create, list, destroy and move environments on Proxmox VE or Incus",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {

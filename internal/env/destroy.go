@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/wellavelino/province/internal/errs"
-	"github.com/wellavelino/province/internal/proxmox"
 )
 
 // DestroyResult is the outcome of env destroy.
@@ -15,6 +14,7 @@ type DestroyResult struct {
 	Name      string   `json:"name"`
 	Host      string   `json:"host"`
 	VMID      int      `json:"vmid,omitempty"`
+	Instance  string   `json:"instance,omitempty"`
 	Destroyed bool     `json:"destroyed"`
 	Warnings  []string `json:"warnings"`
 }
@@ -34,14 +34,14 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 		return nil, errs.Refusedf("env %s was moved but its tofu state still points at the old guest, so destroy could hit the wrong one; finish the move first:\n  %s",
 			name, strings.Join(md.TofuFix, "\n  "))
 	}
-	res := &DestroyResult{Name: name, Host: md.Host, VMID: md.VMID, Warnings: []string{}}
+	res := &DestroyResult{Name: name, Host: md.Host, VMID: md.VMID, Instance: md.Instance, Warnings: []string{}}
 	warn := func(format string, a ...any) {
 		msg := fmt.Sprintf(format, a...)
 		res.Warnings = append(res.Warnings, msg)
 		m.logf("warning: %s", msg)
 	}
 
-	h, err := m.Cfg.HostByName(md.Host)
+	h, err := m.hostOf(md)
 	if err != nil {
 		return nil, err
 	}
@@ -49,16 +49,19 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 	if err != nil {
 		return nil, err
 	}
-	if md.Status != StatusPlanned && md.VMID != 0 {
-		host := m.Host(h)
-		// pct exec fails on a stopped container, so only log out a running one.
-		switch st, err := host.Status(ctx, proxmox.TypeLXC, md.VMID); {
+	if md.Status != StatusPlanned && md.created() {
+		g, err := m.guestFor(h, md)
+		if err != nil {
+			return nil, err
+		}
+		// exec fails on a stopped container, so only log out a running one.
+		switch st, err := g.Status(ctx); {
 		case err != nil:
 			warn("skipped tailscale logout in %s: status check failed: %v", name, err)
 		case st != "running":
 			m.logf("info: %s is %s; skipping tailscale logout", name, st)
 		default:
-			if err := host.Exec(ctx, md.VMID, nil, nil, "tailscale", "logout"); err != nil {
+			if err := g.Exec(ctx, nil, nil, "tailscale", "logout"); err != nil {
 				warn("tailscale logout in %s failed: %v", name, err)
 			}
 		}

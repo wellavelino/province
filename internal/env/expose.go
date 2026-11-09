@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/wellavelino/province/internal/errs"
-	"github.com/wellavelino/province/internal/hostops"
-	"github.com/wellavelino/province/internal/proxmox"
 )
 
 // Commands run in the guest (pct exec <vmid> -- ...), checked against the
@@ -77,12 +75,12 @@ func (m *Manager) Unexpose(ctx context.Context, name string, yes bool) (*ExposeR
 	if !yes {
 		return nil, errs.Refusedf("env unexpose %s turns off its public URL: pass --yes", name)
 	}
-	md, host, err := m.runningEnv(ctx, name, "unexpose")
+	md, g, err := m.runningEnv(ctx, name, "unexpose")
 	if err != nil {
 		return nil, err
 	}
 	// "handler does not exist": nothing is served on 443, already off.
-	if err := host.Exec(ctx, md.VMID, nil, nil, unexposeArgv...); err != nil && !strings.Contains(err.Error(), "handler does not exist") {
+	if err := g.Exec(ctx, nil, nil, unexposeArgv...); err != nil && !strings.Contains(err.Error(), "handler does not exist") {
 		return nil, fmt.Errorf("turning off Funnel in %s: %w", name, err)
 	}
 	md.ExposePort, md.PublicURL = 0, ""
@@ -93,36 +91,39 @@ func (m *Manager) Unexpose(ctx context.Context, name string, yes bool) (*ExposeR
 }
 
 // runningEnv loads a bootstrapped env whose container is running: Funnel
-// is changed through pct exec, which needs a running container.
-func (m *Manager) runningEnv(ctx context.Context, name, verb string) (*Metadata, hostops.Host, error) {
+// and recipes run through exec in the guest, which needs it running.
+func (m *Manager) runningEnv(ctx context.Context, name, verb string) (*Metadata, guest, error) {
 	md, err := m.load(name)
 	if err != nil {
 		return nil, nil, err
 	}
-	if md.Status != StatusBootstrapped || md.VMID == 0 {
+	if md.Status != StatusBootstrapped || !md.created() {
 		return nil, nil, errs.Refusedf("env %s is %s, not bootstrapped: finish `province env create %s --apply` before env %s", name, md.Status, name, verb)
 	}
-	h, err := m.Cfg.HostByName(md.Host)
+	h, err := m.hostOf(md)
 	if err != nil {
-		return nil, nil, &errs.Error{Kind: errs.Refused, Err: err}
+		return nil, nil, err
 	}
-	host := m.Host(h)
-	st, err := host.Status(ctx, proxmox.TypeLXC, md.VMID)
+	g, err := m.guestFor(h, md)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := g.Status(ctx)
 	if err != nil {
 		return nil, nil, &errs.Error{Kind: errs.Preflight, Err: err}
 	}
 	if st != "running" {
-		return nil, nil, errs.Refusedf("env %s (vmid %d on %s) is %s; start it first (`pct start %d` on %s), then re-run env %s",
-			name, md.VMID, md.Host, st, md.VMID, md.Host, verb)
+		return nil, nil, errs.Refusedf("env %s (%s on %s) is %s; start it first (%s), then re-run env %s",
+			name, md.guestRef(h), md.Host, st, g.StartHint(), verb)
 	}
-	return md, host, nil
+	return md, g, nil
 }
 
 // funnelOn checks that the guest's node may use Funnel, publishes port and
 // returns the public URL.
-func (m *Manager) funnelOn(ctx context.Context, host hostops.Host, md *Metadata, port int) (string, error) {
+func (m *Manager) funnelOn(ctx context.Context, g guest, md *Metadata, port int) (string, error) {
 	var out strings.Builder
-	if err := host.Exec(ctx, md.VMID, nil, &out, tsStatusArgv...); err != nil {
+	if err := g.Exec(ctx, nil, &out, tsStatusArgv...); err != nil {
 		return "", fmt.Errorf("tailscale status in %s: %w", md.Name, err)
 	}
 	self, err := parseSelf([]byte(out.String()))
@@ -135,7 +136,7 @@ func (m *Manager) funnelOn(ctx context.Context, host hostops.Host, md *Metadata,
 	if missing := self.missingCaps(); missing != "" {
 		return "", errs.Preflightf("Tailscale Funnel is not allowed for %s (%s). %s", md.Name, missing, funnelHint(m.Cfg.Tailscale.Tag, md.Name, port))
 	}
-	if err := host.Exec(ctx, md.VMID, nil, nil, exposeArgv(port)...); err != nil {
+	if err := g.Exec(ctx, nil, nil, exposeArgv(port)...); err != nil {
 		if funnelDenied(err) {
 			return "", fmt.Errorf("tailscale funnel in %s: %w\n%s", md.Name, err, funnelHint(m.Cfg.Tailscale.Tag, md.Name, port))
 		}

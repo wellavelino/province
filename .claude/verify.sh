@@ -26,7 +26,7 @@ step "go test -race"
 CGO_ENABLED=1 go test -race -count=1 ./...
 
 step "shellcheck"
-for f in internal/bootstrap/bootstrap.sh .claude/verify.sh; do
+for f in internal/bootstrap/bootstrap.sh internal/bootstrap/recipe.sh .claude/verify.sh; do
   if [ -f "$f" ]; then
     shellcheck -s bash "$f"
   elif [ "$f" = internal/bootstrap/bootstrap.sh ] && [ -d internal/bootstrap ]; then

@@ -30,12 +30,26 @@ func (m *Manager) Show(ctx context.Context, name string) (*View, error) {
 		return nil, err
 	}
 	v := m.view(md)
-	if md.VMID == 0 {
+	if !md.created() {
 		return &v, nil
 	}
 	// Like list: a host that cannot be asked (gone from the config, token
 	// unset, unreachable) makes the live status unknown, not an error.
-	h, err := m.Cfg.HostByName(md.Host)
+	var h config.Host
+	if md.backend() == config.BackendIncus {
+		var g guest
+		if h, err = m.hostOf(md); err == nil {
+			g, err = m.guestFor(h, md)
+		}
+		if err == nil {
+			v.LiveStatus, err = g.Status(ctx)
+		}
+		if err != nil {
+			v.LiveStatus, v.Error = LiveUnknown, err.Error()
+		}
+		return &v, nil
+	}
+	h, err = m.Cfg.HostByName(md.Host)
 	var api proxmox.Client
 	if err == nil {
 		api, err = m.Client(h)

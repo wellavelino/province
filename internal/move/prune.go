@@ -44,6 +44,9 @@ func (m *Mover) Prune(ctx context.Context, o PruneOpts) (*PruneResult, error) {
 	if err != nil {
 		return nil, &errs.Error{Kind: errs.Refused, Err: err}
 	}
+	if h.IsIncus() {
+		return nil, errs.Refusedf("guest prune works on Proxmox hosts only; %s is an incus host", h.Name)
+	}
 	if o.EnvAt != nil {
 		name, err := o.EnvAt(h.Name, o.VMID)
 		if err != nil {
@@ -88,7 +91,7 @@ func (m *Mover) Prune(ctx context.Context, o PruneOpts) (*PruneResult, error) {
 	}
 
 	res := &PruneResult{VMID: o.VMID, Host: h.Name, Type: g.Type, Name: g.Name, CopiesOn: []string{}, Forced: o.Force, Warnings: []string{}}
-	for _, other := range m.Cfg.Hosts {
+	for _, other := range m.Cfg.ProxmoxHosts() {
 		if other.Name == h.Name {
 			continue
 		}
