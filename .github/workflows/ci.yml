@@ -12,8 +12,8 @@ jobs:
     name: verify (gofmt, vet, build, race tests, shellcheck)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: sudo apt-get install -y -q shellcheck
@@ -23,8 +23,8 @@ jobs:
     name: tofu validate (generated configs against the real providers)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/checkout@v7
+      - uses: opentofu/setup-opentofu@v2
         with:
           tofu_wrapper: false
       - run: tofu version
