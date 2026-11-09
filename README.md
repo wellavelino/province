@@ -182,6 +182,17 @@ The moved guest keeps the `onboot` value it had in the archive; the source is ke
 
 ## Development
 
-`bash .claude/verify.sh` runs gofmt, vet, build, `go mod tidy -diff`, race tests, shellcheck and staticcheck (when installed). Tests use fakes only; none talk to a real host.
+`bash .claude/verify.sh` runs gofmt, vet, build, `go mod tidy -diff`, race tests, shellcheck and staticcheck (when installed). Unit tests use fakes only; none talk to a real host.
+
+`bash scripts/tofu-validate.sh` runs `tofu init` and `tofu validate` on every generated config in `internal/tfgen/testdata` (the golden files the tfgen tests compare against), so the real `lxc/incus` and `bpg/proxmox` providers check each attribute. It needs `tofu` and access to the OpenTofu registry, but no credentials or host. After changing a generator, refresh the golden files with `go test ./internal/tfgen -update`, then run it.
+
+CI (`.github/workflows/ci.yml`) runs both on every push and pull request.
+
+### TODO: tests against real systems
+
+- [ ] **Recipes in a real Debian 13 container.** In CI, start `debian:13`, create the user, pipe a real recipe payload into `bash -s` (a package, `go@1.24` through mise, a public dotfiles repo, a `run` command), then check that the package is installed, that a non-interactive `bash -c 'go version'` as the user finds the tool, and that the dotfiles were cloned. Run it twice to prove it is safe to repeat, as `env provision` relies on. No secrets needed.
+- [ ] **Full lifecycle on a real Incus.** In a GitHub Actions job, install Incus (`apt install incus`, `incus admin init --minimal`), use the built-in `local` remote, and run the real binary: `env create ci-<run-id> --host local --recipe test --apply`, `env show`, `env provision`, `env destroy --yes`. Needs a `TS_AUTHKEY` repo secret (an ephemeral, tagged key used only for CI) and `TS_API_KEY` so destroy removes the node. Run it by hand or nightly, and only when the secret is set.
+
+Proxmox has no CI equivalent (nested Proxmox needs KVM). Test it by hand on a spare, non-production host with the same command sequence.
 
 License: [MPL-2.0](LICENSE).
