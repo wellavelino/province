@@ -1,3 +1,14 @@
 /province
 *.test
 *.out
+
+# Site config, tofu state and secrets live in each user's private repo,
+# never here.
+province.yaml
+province.yml
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.env
+.env.*
