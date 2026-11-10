@@ -548,3 +548,22 @@ func TestMoveToOtherVMIDRestoreFailureNamesTheTargetID(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestMoveStartFailureReturnsTheResult(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve2"].Fail = func(c string) error {
+		if strings.HasPrefix(c, "pve2 Start") {
+			return errors.New("startup for container '105' failed")
+		}
+		return nil
+	}
+	o := opts()
+	o.Start = true
+	res, err := r.m.Move(ctx, o)
+	if err == nil || errs.ExitCode(err) != 1 || !strings.Contains(err.Error(), "`pct start 105` on pve2") {
+		t.Fatalf("err = %v", err)
+	}
+	if res == nil || res.Target != "stopped" || res.To != "pve2" || res.TargetVMID != 105 || !res.DumpRemoved || !strings.Contains(res.Source, "onboot=0") {
+		t.Fatalf("result = %+v", res)
+	}
+}

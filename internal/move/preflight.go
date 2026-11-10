@@ -42,18 +42,19 @@ type Opts struct {
 
 // plan is everything preflight learned.
 type plan struct {
-	from, to   config.Host
-	src, dst   hostops.Host
-	typ        string
-	targetID   int // VMID on the target
-	running    bool
-	storage    string
-	total      int64
-	warnings   []string
-	dumpPath   string
-	startCmd   string // how to bring the source back
-	targetList string // how to inspect the target
-	restoreCmd string // how to restore the kept dump by hand
+	from, to    config.Host
+	src, dst    hostops.Host
+	typ         string
+	targetID    int // VMID on the target
+	running     bool
+	storage     string
+	total       int64
+	warnings    []string
+	dumpPath    string
+	startCmd    string // how to bring the source back
+	targetStart string // how to start the moved copy
+	targetList  string // how to inspect the target
+	restoreCmd  string // how to restore the kept dump by hand
 }
 
 func (m *Mover) logf(format string, a ...any) {
@@ -136,6 +137,7 @@ func (m *Mover) preflight(ctx context.Context, o Opts) (*plan, error) {
 		tool = "qm"
 	}
 	p.startCmd = fmt.Sprintf("`%s start %d` on %s", tool, o.VMID, from.Name)
+	p.targetStart = fmt.Sprintf("`%s start %d` on %s", tool, p.targetID, to.Name)
 	p.targetList = fmt.Sprintf("`%s list` on %s", tool, to.Name)
 
 	dstGuests, err := dstAPI.ListGuests(ctx, to.Node)

@@ -51,14 +51,25 @@ func (a *app) guestMoveCmd() *cobra.Command {
 				return err
 			}
 			moved, err := a.moverFor(s).Move(cmd.Context(), o)
-			if err != nil {
+			if moved == nil {
 				return err
 			}
 			res := moveResult{Result: moved}
 			if envName != "" {
-				// The guest is safe on the target; this only updates records.
+				// The guest is safe on the target (even if it did not start);
+				// this only updates records.
 				to, _ := s.cfg.HostByName(o.To)
 				res.Env = mgr.Rehome(cmd.Context(), envName, to, moved.TargetVMID, moved.Storage)
+			}
+			if err != nil {
+				// Only the start failed: say where the env's records now point.
+				if e := res.Env; e != nil {
+					if !e.TofuOutOfSync {
+						return fmt.Errorf("%w; env %s now recorded on %s as vmid %d", err, e.Name, e.Host, e.VMID)
+					}
+					return fmt.Errorf("%w; env %s: tofu state NOT updated (%s); finish by hand: %s", err, e.Name, e.Error, strings.Join(e.Fix, "; "))
+				}
+				return err
 			}
 			return a.emit(res, func(w io.Writer) {
 				fmt.Fprintf(w, "Moved %s %d from %s to %s as %d (storage %s); target is %s.\nSource on %s: %s\n",

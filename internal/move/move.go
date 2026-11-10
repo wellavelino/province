@@ -25,6 +25,10 @@ type Result struct {
 // verify archive -> restore on target -> onboot=0 on source -> remove dump
 // -> optionally start target. Both copies never run at once: the target is
 // started only after the source is stopped and pinned to onboot=0.
+//
+// If only the final start fails, the guest is restored on the target and
+// the source is pinned, so Move returns the Result (Target "stopped") with
+// the error: callers must treat the guest as moved.
 func (m *Mover) Move(ctx context.Context, o Opts) (*Result, error) {
 	p, err := m.preflight(ctx, o)
 	if err != nil {
@@ -85,7 +89,7 @@ func (m *Mover) Move(ctx context.Context, o Opts) (*Result, error) {
 	if o.Start {
 		m.logf("starting %d on %s", p.targetID, p.to.Name)
 		if err := p.dst.Start(ctx, p.typ, p.targetID); err != nil {
-			return nil, fmt.Errorf("guest %d was moved to %s as %d but did not start: %w", o.VMID, p.to.Name, p.targetID, err)
+			return res, fmt.Errorf("guest %d was moved to %s as %d but did not start: %w; start it with %s", o.VMID, p.to.Name, p.targetID, err, p.targetStart)
 		}
 		res.Target = "running"
 	}
