@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -137,6 +138,11 @@ func (m *Manager) funnelOn(ctx context.Context, g guest, md *Metadata, port int)
 	if err != nil {
 		return "", fmt.Errorf("tailscale status in %s: %w", md.Name, err)
 	}
+	// The name comes from the guest: it becomes the recorded public URL,
+	// so only the env's own node name in a ts.net tailnet is accepted.
+	if err := ownTSNetName(self.DNSName, md.Name); err != nil {
+		return "", err
+	}
 	// Without both capabilities tailscale either exits 0 after printing an
 	// enablement link (nothing published) or waits for an admin; refuse
 	// before running it.
@@ -173,6 +179,28 @@ func parseSelf(b []byte) (*tsSelf, error) {
 		return nil, errors.New("the node has no DNS name: enable MagicDNS in the admin console (DNS page)")
 	}
 	return st.Self, nil
+}
+
+// tsNetName is a lowercase MagicDNS name under ts.net, optional final dot.
+var tsNetName = regexp.MustCompile(`^([a-z0-9-]+)(\.[a-z0-9-]+)*\.ts\.net\.?$`)
+
+// ownTSNetName checks that dns, as the guest reported it, is env name's
+// node in a ts.net tailnet: its first label is name, or name-<digits>
+// (Tailscale's suffix when the name was taken).
+func ownTSNetName(dns, name string) error {
+	m := tsNetName.FindStringSubmatch(dns)
+	if m != nil {
+		if label := m[1]; label == name || isSuffixed(label, name) {
+			return nil
+		}
+	}
+	return errs.Preflightf("the guest of %s reports the tailnet name %q, which is not %s's node under ts.net (want %s.<tailnet>.ts.net or %s-<n>.<tailnet>.ts.net); nothing was published or recorded",
+		name, dns, name, name, name)
+}
+
+func isSuffixed(label, name string) bool {
+	n, ok := strings.CutPrefix(label, name+"-")
+	return ok && n != "" && strings.Trim(n, "0123456789") == ""
 }
 
 func (s *tsSelf) has(c string) bool {

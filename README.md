@@ -298,7 +298,7 @@ Then per env:
 
 ### Security of published envs
 
-A published app is reachable by anyone, so assume it can be compromised and keep it from reaching anything else. The allow-all default policy lets every node, including `tag:dev`, reach every other node; for exposed envs, replace it with grants where your devices reach the guests and `tag:dev` reaches nothing:
+A published app is reachable by anyone, so assume it can be compromised and keep it from reaching anything else. Province treats what a guest reports as untrusted: `env expose` records the public URL only when the node's MagicDNS name is `<env>.<tailnet>.ts.net` (or `<env>-<n>.…`, Tailscale's suffix for a taken name) and refuses otherwise, and human (non-`--json`) output escapes control characters in every string it prints. The allow-all default policy lets every node, including `tag:dev`, reach every other node; for exposed envs, replace it with grants where your devices reach the guests and `tag:dev` reaches nothing:
 
 ```json
 {

@@ -21,5 +21,5 @@ func (a *app) writeError(err error) {
 		_ = a.print(string(b) + "\n")
 		return
 	}
-	fmt.Fprintf(a.stderr, "province: %s\n", msg)
+	fmt.Fprintf(a.stderr, "province: %s\n", escapeControl(msg))
 }
