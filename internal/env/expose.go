@@ -104,7 +104,7 @@ func (m *Manager) runningEnv(ctx context.Context, name, verb string) (*Metadata,
 	if err != nil {
 		return nil, nil, err
 	}
-	g, err := m.guestFor(h, md)
+	g, err := m.backendFor(h).guest(md)
 	if err != nil {
 		return nil, nil, err
 	}

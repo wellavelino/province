@@ -142,3 +142,13 @@ func TestEnvOnHostThatChangedBackendIsRefused(t *testing.T) {
 		t.Fatalf("calls: %v", r.j.Entries())
 	}
 }
+
+func TestIncusExistingEnvRefusalNamesTheInstance(t *testing.T) {
+	r := newRig(t)
+	withIncus(t, r)
+	seed(t, r, Metadata{Name: "api", Backend: "incus", Host: "box", Instance: "api", Status: StatusBootstrapped})
+	_, err := r.m.Create(ctx, CreateOpts{Name: "api", Apply: true})
+	if errs.KindOf(err) != errs.Refused || !strings.Contains(err.Error(), "already exists on box (instance api)") || strings.Contains(err.Error(), "vmid") {
+		t.Fatalf("err = %v", err)
+	}
+}

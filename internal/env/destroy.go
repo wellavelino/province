@@ -50,7 +50,7 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 		return nil, err
 	}
 	if md.Status != StatusPlanned && md.created() {
-		g, err := m.guestFor(h, md)
+		g, err := m.backendFor(h).guest(md)
 		if err != nil {
 			return nil, err
 		}

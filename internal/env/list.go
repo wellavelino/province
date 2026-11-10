@@ -7,10 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-
-	"github.com/wellavelino/province/internal/config"
-	"github.com/wellavelino/province/internal/incus"
-	"github.com/wellavelino/province/internal/proxmox"
 )
 
 // Live status values besides the API's own (running, stopped).
@@ -68,53 +64,25 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 			byHost[md.Host] = append(byHost[md.Host], len(views)-1)
 		}
 	}
-	for hostName, idx := range byHost {
-		h, herr := m.Cfg.HostByName(hostName)
-		if herr == nil && h.IsIncus() {
-			m.listIncus(ctx, h, views, idx)
-			continue
+	for _, idx := range byHost {
+		mds := make([]*Metadata, len(idx))
+		for k, i := range idx {
+			mds[k] = &views[i].Metadata
 		}
-		var guests []proxmox.Guest
-		var api proxmox.Client
-		if herr == nil {
-			api, herr = m.Client(h)
+		// hostOf also refuses a host whose backend changed under the env.
+		h, err := m.hostOf(mds[0])
+		var live []string
+		if err == nil {
+			live, err = m.backendFor(h).statuses(ctx, mds)
 		}
-		if herr == nil {
-			guests, herr = api.ListGuests(ctx, h.Node)
-		}
-		for _, i := range idx {
-			if herr != nil {
-				views[i].LiveStatus, views[i].Error = LiveUnknown, herr.Error()
+		for k, i := range idx {
+			if err != nil {
+				views[i].LiveStatus, views[i].Error = LiveUnknown, err.Error()
 				continue
 			}
-			views[i].LiveStatus = LiveMissing
-			for _, g := range guests {
-				if g.VMID == views[i].VMID && g.Type == proxmox.TypeLXC {
-					views[i].LiveStatus = g.Status
-				}
-			}
+			views[i].LiveStatus = live[k]
 		}
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views, nil
-}
-
-// listIncus sets the live status of views[idx], all on Incus host h, with
-// one instance listing.
-func (m *Manager) listIncus(ctx context.Context, h config.Host, views []View, idx []int) {
-	c, err := m.incusClient(h)
-	var list []incus.Instance
-	if err == nil {
-		list, err = c.Instances(ctx)
-	}
-	for _, i := range idx {
-		switch {
-		case err != nil:
-			views[i].LiveStatus, views[i].Error = LiveUnknown, err.Error()
-		case views[i].backend() != config.BackendIncus:
-			views[i].LiveStatus, views[i].Error = LiveUnknown, "host "+h.Name+" is now an incus host; the env was created on Proxmox"
-		default:
-			views[i].LiveStatus = incusStatus(list, views[i].Name)
-		}
-	}
 }

@@ -3,22 +3,16 @@ package env
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/wellavelino/province/internal/bootstrap"
 	"github.com/wellavelino/province/internal/config"
 	"github.com/wellavelino/province/internal/errs"
-	"github.com/wellavelino/province/internal/proxmox"
-	"github.com/wellavelino/province/internal/tfgen"
-	"github.com/wellavelino/province/internal/tofu"
-	"github.com/wellavelino/province/internal/vmids"
 )
 
 // CreateOpts are the env create flags. Zero sizes fall back to the
@@ -89,7 +83,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	case err != nil:
 		return nil, err
 	case md.Status == StatusBootstrapped:
-		return nil, errs.Refusedf("env %s already exists on %s (vmid %d); destroy it first", o.Name, md.Host, md.VMID)
+		return nil, errs.Refusedf("env %s already exists on %s (%s); destroy it first", o.Name, md.Host, md.guestLabel())
 	}
 
 	host, err := m.createHost(o, md)
@@ -125,11 +119,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	md.ExposePort = pick(o.Expose, md.ExposePort)
 	md.Tun = m.Cfg.Tailscale.Tun
 
-	var api proxmox.Client
-	if !host.IsIncus() {
-		if api, err = m.Client(host); err != nil {
-			return nil, err
-		}
+	b := m.backendFor(host)
+	if err := b.check(); err != nil {
+		return nil, err
 	}
 	tf, err := m.Tofu(host)
 	if err != nil {
@@ -139,32 +131,18 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err != nil {
 		return nil, err
 	}
-	vmid := md.VMID
-	var warnings []string
-	if host.IsIncus() {
-		if err := m.incusPreflight(ctx, host); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := m.createPreflight(ctx, api, host); err != nil {
-			return nil, err
-		}
-		// A new env gets a VMID free on every Proxmox host, so it can later
-		// move to any of them without a clash. Once created, its VMID is fixed.
-		if vmid == 0 {
-			used, w := vmids.Used(ctx, m.Cfg.ProxmoxHosts(), m.Client)
-			for _, s := range w {
-				m.logf("warning: %s", s)
-			}
-			warnings = w
-			vmid = vmids.LowestFree(used, m.Cfg.VMIDStart)
-		}
+	p, err := b.plan(ctx, md)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range p.Warnings {
+		m.logf("warning: %s", s)
 	}
 
 	if err := mkdirAll(dir); err != nil {
 		return nil, err
 	}
-	if err := m.writeMainTF(dir, md, host, vmid, keys); err != nil {
+	if err := m.writeMainTF(dir, md, host, p.VMID, keys); err != nil {
 		return nil, err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, ".gitignore"), []byte(".terraform/\n")); err != nil {
@@ -173,8 +151,8 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
-	res := &CreateResult{Name: o.Name, Host: host.Name, Backend: host.BackendName(), Dir: dir, VMID: vmid, Recipe: recipe,
-		ExposePort: md.ExposePort, Warnings: append([]string{}, warnings...)}
+	res := &CreateResult{Name: o.Name, Host: host.Name, Backend: host.BackendName(), Dir: dir, VMID: p.VMID, Recipe: recipe,
+		ExposePort: md.ExposePort, Warnings: append([]string{}, p.Warnings...)}
 
 	if err := tf.Init(ctx, dir); err != nil {
 		return nil, err
@@ -192,16 +170,12 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := tf.Apply(ctx, dir); err != nil {
 		return nil, fmt.Errorf("%w; fix the cause and re-run `province env create %s --apply`", err, o.Name)
 	}
-	if host.IsIncus() {
-		if err := instanceOutput(ctx, tf, dir, o.Name); err != nil {
-			return nil, err
-		}
-		md.Instance = o.Name
-	} else {
-		if vmid, err = vmidOutput(ctx, tf, dir); err != nil {
-			return nil, err
-		}
-		md.VMID = vmid
+	out, err := tf.Output(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.adopt(out, md); err != nil {
+		return nil, fmt.Errorf("tofu output in %s has %w", dir, err)
 	}
 	md.Status, md.TailscaleIP = StatusApplied, ""
 	if err := m.writeMetadata(dir, md); err != nil {
@@ -221,7 +195,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
-	g, err := m.guestFor(host, md)
+	g, err := b.guest(md)
 	if err != nil {
 		return nil, err
 	}
@@ -294,111 +268,14 @@ func (m *Manager) readKeys() ([]string, error) {
 	return keys, nil
 }
 
-// createPreflight checks template, bridge and storage through the API.
-func (m *Manager) createPreflight(ctx context.Context, c proxmox.Client, h config.Host) error {
-	d := m.Cfg.Defaults
-	ok, err := c.TemplateExists(ctx, h.Node, d.Template)
-	if err != nil {
-		return &errs.Error{Kind: errs.Preflight, Err: err}
-	}
-	if !ok {
-		return errs.Preflightf("template %s not found on %s: download it with `pveam download` on the host", d.Template, h.Name)
-	}
-	bridges, err := c.Bridges(ctx, h.Node)
-	if err != nil {
-		return &errs.Error{Kind: errs.Preflight, Err: err}
-	}
-	if !slices.Contains(bridges, d.Bridge) {
-		return errs.Preflightf("bridge %s not found on %s (have %s)", d.Bridge, h.Name, strings.Join(bridges, ", "))
-	}
-	storages, err := c.Storages(ctx, h.Node)
-	if err != nil {
-		return &errs.Error{Kind: errs.Preflight, Err: err}
-	}
-	for _, s := range storages {
-		if s.Name == d.Storage {
-			if !s.Active || !s.Has("rootdir") {
-				return errs.Preflightf("storage %s on %s is inactive or does not hold container volumes (rootdir)", d.Storage, h.Name)
-			}
-			return nil
-		}
-	}
-	return errs.Preflightf("storage %s not found on %s", d.Storage, h.Name)
-}
-
-// incusPreflight checks the remote answers and has the pool and network.
-func (m *Manager) incusPreflight(ctx context.Context, h config.Host) error {
-	c, err := m.incusClient(h)
-	if err != nil {
-		return err
-	}
-	ok, err := c.HasStoragePool(ctx, h.StoragePool)
-	if err != nil {
-		return errs.Preflightf("incus remote %s (host %s) did not answer: %v; check `incus remote list` and `incus info %s:`", h.Remote, h.Name, err, h.Remote)
-	}
-	if !ok {
-		return errs.Preflightf("storage pool %s not found on incus remote %s (see `incus storage list %s:`)", h.StoragePool, h.Remote, h.Remote)
-	}
-	if h.Network != "" {
-		ok, err := c.HasNetwork(ctx, h.Network)
-		if err != nil {
-			return &errs.Error{Kind: errs.Preflight, Err: err}
-		}
-		if !ok {
-			return errs.Preflightf("network %s not found on incus remote %s (see `incus network list %s:`)", h.Network, h.Remote, h.Remote)
-		}
-	}
-	return nil
-}
-
-// instanceOutput checks that tofu created the Incus instance it was asked for.
-func instanceOutput(ctx context.Context, tf tofu.Tofu, dir, name string) error {
-	out, err := tf.Output(ctx, dir)
-	if err != nil {
-		return err
-	}
-	var got string
-	if raw, ok := out["name"]; !ok || json.Unmarshal(raw, &got) != nil || got != name {
-		return fmt.Errorf("tofu output in %s does not name instance %s", dir, name)
-	}
-	return nil
-}
-
-func vmidOutput(ctx context.Context, tf tofu.Tofu, dir string) (int, error) {
-	out, err := tf.Output(ctx, dir)
-	if err != nil {
-		return 0, err
-	}
-	var vmid int
-	if raw, ok := out["vmid"]; !ok || json.Unmarshal(raw, &vmid) != nil || vmid <= 0 {
-		return 0, fmt.Errorf("tofu output in %s has no numeric vmid", dir)
-	}
-	return vmid, nil
-}
-
-// bootstrap prepares the container (keyctl, /dev/net/tun) and runs the
-// bootstrap script in it. The auth key travels only on the script's stdin.
-// On Incus, nesting and /dev/net/tun are part of the tofu config already.
+// bootstrap applies what tofu could not set, then runs the bootstrap
+// script in the container. The auth key travels only on the script's stdin.
 func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, keys []string) (string, error) {
-	if !h.IsIncus() {
-		host := m.Host(h)
-		var opts []string
-		if md.Docker {
-			opts = append(opts, "--features", "nesting=1,keyctl=1")
-		}
-		if md.Tun == config.TunDevice {
-			opts = append(opts, "--dev0", "/dev/net/tun")
-		}
-		if len(opts) > 0 {
-			if err := host.Set(ctx, proxmox.TypeLXC, md.VMID, opts...); err != nil {
-				return "", err
-			}
-			if err := host.Reboot(ctx, proxmox.TypeLXC, md.VMID); err != nil {
-				return "", err
-			}
-		}
+	b := m.backendFor(h)
+	if err := b.prepare(ctx, md); err != nil {
+		return "", err
 	}
-	g, err := m.guestFor(h, md)
+	g, err := b.guest(md)
 	if err != nil {
 		return "", err
 	}
@@ -417,29 +294,9 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 	return bootstrap.ParseResult(out.String())
 }
 
-// writeMainTF renders the env's tofu config for host and vmid.
+// writeMainTF renders the env's tofu config for host and, on Proxmox, vmid.
 func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, vmid int, keys []string) error {
-	if host.IsIncus() {
-		mainTF, err := tfgen.GenerateIncus(tfgen.Incus{
-			Name: md.Name, Remote: host.Remote, Project: host.Project, Image: host.Image,
-			Pool: host.StoragePool, Network: host.Network, CPU: md.CPU, RAM: md.RAM, Disk: md.Disk,
-			Docker: md.Docker, TunDevice: md.Tun == config.TunDevice,
-		})
-		if err != nil {
-			return err
-		}
-		return writeFileAtomic(filepath.Join(dir, "main.tf.json"), mainTF)
-	}
-	storage := md.Storage
-	if storage == "" {
-		storage = m.Cfg.Defaults.Storage
-	}
-	mainTF, err := tfgen.Generate(tfgen.LXC{
-		Name: md.Name, VMID: vmid, Node: host.Node, Endpoint: host.Endpoint, Insecure: host.Insecure,
-		Template: m.Cfg.Defaults.Template, Storage: storage, Bridge: m.Cfg.Defaults.Bridge,
-		CPU: md.CPU, RAM: md.RAM, Disk: md.Disk, Keys: keys,
-		Docker: md.Docker, TunDevice: md.Tun == config.TunDevice,
-	})
+	mainTF, err := m.backendFor(host).mainTF(md, keys, planned{VMID: vmid})
 	if err != nil {
 		return err
 	}

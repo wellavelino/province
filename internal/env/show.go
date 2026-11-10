@@ -8,7 +8,6 @@ import (
 
 	"github.com/wellavelino/province/internal/config"
 	"github.com/wellavelino/province/internal/errs"
-	"github.com/wellavelino/province/internal/proxmox"
 )
 
 // load reads an environment's metadata; an unknown env is a plain failure.
@@ -35,27 +34,9 @@ func (m *Manager) Show(ctx context.Context, name string) (*View, error) {
 	}
 	// Like list: a host that cannot be asked (gone from the config, token
 	// unset, unreachable) makes the live status unknown, not an error.
-	var h config.Host
-	if md.backend() == config.BackendIncus {
-		var g guest
-		if h, err = m.hostOf(md); err == nil {
-			g, err = m.guestFor(h, md)
-		}
-		if err == nil {
-			v.LiveStatus, err = g.Status(ctx)
-		}
-		if err != nil {
-			v.LiveStatus, v.Error = LiveUnknown, err.Error()
-		}
-		return &v, nil
-	}
-	h, err = m.Cfg.HostByName(md.Host)
-	var api proxmox.Client
+	h, err := m.hostOf(md)
 	if err == nil {
-		api, err = m.Client(h)
-	}
-	if err == nil {
-		v.LiveStatus, err = api.GuestStatus(ctx, h.Node, proxmox.TypeLXC, md.VMID)
+		v.LiveStatus, err = m.backendFor(h).status(ctx, md)
 	}
 	if err != nil {
 		v.LiveStatus, v.Error = LiveUnknown, err.Error()

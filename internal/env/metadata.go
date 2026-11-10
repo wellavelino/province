@@ -98,6 +98,15 @@ func (md *Metadata) backend() string {
 // created reports whether the env's guest was created (tofu apply ran).
 func (md *Metadata) created() bool { return md.VMID != 0 || md.Instance != "" }
 
+// guestLabel names the env's guest without its host: "vmid 105" or
+// "instance api".
+func (md *Metadata) guestLabel() string {
+	if md.backend() == config.BackendIncus {
+		return "instance " + md.Name
+	}
+	return fmt.Sprintf("vmid %d", md.VMID)
+}
+
 // guestRef names the env's guest for messages: "vmid 105" or
 // "instance api on remote box".
 func (md *Metadata) guestRef(h config.Host) string {

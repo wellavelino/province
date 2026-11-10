@@ -2,12 +2,9 @@ package env
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 
-	"github.com/wellavelino/province/internal/config"
-	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/hostops"
 	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
@@ -61,46 +58,3 @@ func (g incusGuest) Status(ctx context.Context) (string, error) {
 }
 
 func (g incusGuest) StartHint() string { return fmt.Sprintf("`incus start %s:%s`", g.remote, g.name) }
-
-// incusStatus is the status of container name in list, or LiveMissing.
-func incusStatus(list []incus.Instance, name string) string {
-	for _, in := range list {
-		if in.Name == name && in.Type != "virtual-machine" {
-			return in.Status
-		}
-	}
-	return LiveMissing
-}
-
-func (m *Manager) incusClient(h config.Host) (incus.Client, error) {
-	if m.Incus == nil {
-		return nil, errors.New("incus backend is not wired")
-	}
-	return m.Incus(h), nil
-}
-
-// guestFor returns the guest of env md on host h.
-func (m *Manager) guestFor(h config.Host, md *Metadata) (guest, error) {
-	if h.IsIncus() {
-		c, err := m.incusClient(h)
-		if err != nil {
-			return nil, err
-		}
-		return incusGuest{c: c, remote: h.Remote, name: md.Name}, nil
-	}
-	return pveGuest{host: m.Host(h), name: h.Name, vmid: md.VMID}, nil
-}
-
-// hostOf returns the configured host env md is recorded on, refusing when
-// the host is gone or now has another backend.
-func (m *Manager) hostOf(md *Metadata) (config.Host, error) {
-	h, err := m.Cfg.HostByName(md.Host)
-	if err != nil {
-		return config.Host{}, &errs.Error{Kind: errs.Refused, Err: err}
-	}
-	if h.BackendName() != md.backend() {
-		return config.Host{}, errs.Refusedf("env %s was created on %s as a %s guest, but host %s is now configured with backend %s",
-			md.Name, md.Host, md.backend(), h.Name, h.BackendName())
-	}
-	return h, nil
-}
