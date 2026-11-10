@@ -29,3 +29,42 @@ jobs:
           tofu_wrapper: false
       - run: tofu version
       - run: bash scripts/tofu-validate.sh
+
+  recipe-container:
+    name: recipe in a real Debian 13 container
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test -tags integration -run TestRecipeInDebianContainer -v -timeout 20m ./internal/bootstrap/
+
+  incus:
+    name: real Incus (plan always; full lifecycle when TS_AUTHKEY is set)
+    runs-on: ubuntu-24.04
+    env:
+      TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      TS_API_KEY: ${{ secrets.TS_API_KEY }}
+      TS_TAG: ${{ vars.TS_TAG }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_wrapper: false
+      - name: Install and start Incus
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q incus
+          sudo incus admin init --minimal
+          # Let the runner user use the daemon without a new login session.
+          sudo chmod 0666 /var/lib/incus/unix.socket
+          # Docker on the runner drops forwarded traffic; let incusbr0 through.
+          sudo iptables -I DOCKER-USER -i incusbr0 -j ACCEPT
+          sudo iptables -I DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          incus version
+          incus list local:
+      - run: bash scripts/e2e-incus.sh
