@@ -1,0 +1,59 @@
+# To do
+
+What province should get next, in order, and what it deliberately does not get. Update this file when something is finished or the order changes.
+
+## The rule every item is held to
+
+Province does three things to one kind of object, the env:
+
+1. **Create** it on a host you own.
+2. **Connect** it to your tailnet.
+3. **Configure** it with a recipe.
+
+Anything else belongs to the host platform (Proxmox, Incus) or to the user's recipe. A new feature has to fit one of the three, stay small, and work the same on every backend, or it does not go in.
+
+## 1. Prove what exists
+
+Unit tests use fakes. These run the real thing.
+
+- [x] **Generated tofu configs against the real providers.** `scripts/tofu-validate.sh`, CI job `tofu-validate`.
+- [ ] **Recipes in a real Debian 13 container.** `internal/bootstrap/recipe_container_test.go` (`-tags integration`), CI job `recipe-container`: real apt, mise and git, run twice; checks the package, the tool on `PATH` as sshd and a login shell see it, the dotfiles clone and `install.sh`, and the `run` command. Written; tick when the job is green.
+- [ ] **Plan against a real Incus.** `scripts/e2e-incus.sh`, CI job `incus`: the real `incus query` preflight and a real `tofu plan` on every push. Written; tick when the job is green.
+- [ ] **Full lifecycle on a real Incus.** The same script goes on to create, bootstrap, recipe, show, provision and destroy when the repo has these Actions settings:
+  - secret `TS_AUTHKEY`: a tagged Tailscale auth key used only for CI (reusable, ephemeral is fine);
+  - secret `TS_API_KEY`: so destroy removes the tailnet node;
+  - variable `TS_TAG`: the key's tag, if it is not `tag:dev`.
+- [ ] **Full lifecycle on a real Proxmox host.** No CI equivalent (nested Proxmox needs KVM). By hand, on a spare, non-production host: `env create demo --recipe <r>`, `--apply`, `ssh`, `env provision demo`, `env destroy demo --yes`. Write down what broke.
+- [ ] **Security audit.** Run the audit that was planned (secret handling, quoting into hosts and guests, the recipe script, generated tofu files, CI) and fix what it confirms.
+
+## 2. One clean backend seam
+
+- [x] `internal/env/backend.go`: one interface, a Proxmox and an Incus implementation. The lifecycle is written once against it.
+
+## 3. `isolated: true`
+
+Today every env can reach the LAN it sits on, including the hosts themselves. An isolated env can reach the internet and the tailnet but not the LAN, enforced on the host so the env's own sudo user cannot undo it.
+
+- [ ] Proxmox: the guest firewall, declared in the tofu config.
+- [ ] Incus: a network ACL, declared in the tofu config.
+- [ ] Later, if needed: an allowlist of outbound hosts instead of "everything but the LAN".
+
+## 4. Disposable and long-lived, as two flags
+
+Long-lived is already the default: an env stays until it is destroyed and starts with its host.
+
+- [ ] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
+- [ ] `--protect`: `env destroy` refuses until the flag is removed.
+
+Backups of long-lived envs stay with the platform (Proxmox backup jobs, `incus export`).
+
+## Not building, for now
+
+Each of these was considered and set aside. Reopen one only with a concrete need.
+
+- **VMs** (`--kind vm`). A stronger wall than a container, but a large change on both backends. `isolated` covers the likelier risk first.
+- **A credential proxy** that adds tokens to requests as they leave the env. Use short-lived, narrowly scoped tokens instead.
+- **Snapshots and `env reset`.** Recreating from a recipe takes minutes.
+- **More backends** (Docker, cloud VMs, NixOS hosts).
+- **Nix, Ansible or cloud-init as something province knows about.** A recipe's `run` can call any of them.
+- **A private dotfiles repo.** Needs a credential in the guest; wait for a design that keeps it out of state and config.

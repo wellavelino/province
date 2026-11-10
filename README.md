@@ -25,7 +25,7 @@ Each environment is an LXC container on your tailnet: your user, your SSH keys, 
 - [Recovery](#recovery)
 - [Development](#development)
 
-Guides: [Recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Agent instructions: [skills/province/SKILL.md](skills/province/SKILL.md).
+Guides: [Recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Roadmap: [docs/todo.md](docs/todo.md). Agent instructions: [skills/province/SKILL.md](skills/province/SKILL.md).
 
 ## How it works
 
@@ -369,15 +369,15 @@ Incus hosts add no secret: the incus remote's client certificate lives in your I
 
 `bash scripts/tofu-validate.sh` runs `tofu init` and `tofu validate` on every generated config in `internal/tfgen/testdata` (the golden files the tfgen tests compare against), so the real `lxc/incus` and `bpg/proxmox` providers check each attribute. It needs `tofu` and access to the OpenTofu registry, but no credentials or host. After changing a generator, refresh the golden files with `go test ./internal/tfgen -update`, then run it.
 
-CI (`.github/workflows/ci.yml`) runs both on every push and pull request.
+Two more tests run against real systems:
+
+- `go test -tags integration -run TestRecipeInDebianContainer ./internal/bootstrap/` applies a real recipe twice in a Debian 13 container (needs Docker and network access).
+- `bash scripts/e2e-incus.sh` drives the real binary against a real Incus server through its `local` remote. Without `TS_AUTHKEY` it stops after the plan; with it, it runs the full create, provision and destroy cycle.
+
+CI (`.github/workflows/ci.yml`) runs all four on every push and pull request.
 
 Design history: [docs/brief.md](docs/brief.md) and [docs/plan-v1.md](docs/plan-v1.md), the notes the first version was built from.
 
-### TODO: tests against real systems
-
-- [ ] **Recipes in a real Debian 13 container.** In CI, start `debian:13`, create the user, pipe a real recipe payload into `bash -s` (a package, `go@1.24` through mise, a public dotfiles repo, a `run` command), then check that the package is installed, that a non-interactive `bash -c 'go version'` as the user finds the tool, and that the dotfiles were cloned. Run it twice to prove it is safe to repeat, as `env provision` relies on. No secrets needed.
-- [ ] **Full lifecycle on a real Incus.** In a GitHub Actions job, install Incus (`apt install incus`, `incus admin init --minimal`), use the built-in `local` remote, and run the real binary: `env create ci-<run-id> --host local --recipe test --apply`, `env show`, `env provision`, `env destroy --yes`. Needs a `TS_AUTHKEY` repo secret (an ephemeral, tagged key used only for CI) and `TS_API_KEY` so destroy removes the node. Run it by hand or nightly, and only when the secret is set.
-
-Proxmox has no CI equivalent (nested Proxmox needs KVM). Test it by hand on a spare, non-production host with the same command sequence.
+What comes next, what is deliberately left out, and the rule new features are held to: [docs/todo.md](docs/todo.md).
 
 License: [MPL-2.0](LICENSE).
