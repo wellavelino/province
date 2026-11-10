@@ -24,7 +24,32 @@ Unit tests use fakes. These run the real thing.
   - secret `TS_API_KEY`: so destroy removes the tailnet node;
   - variable `TS_TAG`: the key's tag, if it is not `tag:dev`.
 - [ ] **Full lifecycle on a real Proxmox host.** No CI equivalent (nested Proxmox needs KVM). By hand, on a spare, non-production host: `env create demo --recipe <r>`, `--apply`, `ssh`, `env provision demo`, `env destroy demo --yes`. Write down what broke.
-- [ ] **Security audit.** Run the audit that was planned (secret handling, quoting into hosts and guests, the recipe script, generated tofu files, CI) and fix what it confirms.
+- [x] **Security audit.** First run done on commit d95aebf: no critical, high or medium issue; four low ones confirmed. Fixes below.
+
+## 1b. Fixes from the first security audit
+
+Confirmed (low):
+
+- [ ] `guest move --start`: when the final start fails, still re-home the env (or mark it out of sync). Until fixed, move province envs without `--start` and start them by hand.
+- [ ] Before acting on a Proxmox env's guest (expose, provision, destroy), check that the guest at its VMID is named after the env; count VMIDs recorded in the state dir as used. Same check for Incus via `user.province.env`.
+- [ ] `env destroy`: delete the tailnet device by an ID stored at bootstrap, not by hostname; skip the delete for an env that never joined.
+- [ ] `env expose`: accept the guest's reported name only if it ends in `.ts.net` and starts with the env name; escape control characters in text output.
+
+Cheap fixes for leads that need an outside fact to confirm:
+
+- [ ] CI: set the Tailscale secrets on the e2e step only, run that job only on pushes to `main`, pin actions by commit SHA.
+- [ ] `env create --apply`: refuse an env marked `tofu_out_of_sync`.
+- [ ] Re-home after a move: validate the env name and use the directory that matched.
+- [ ] Print the MagicDNS name the node actually got, not the bare env name, in the `ssh` hint.
+- [ ] Escape `${` and `%{` in generated tofu strings; accept only real public-key lines from `ssh_public_keys`.
+- [ ] Put guest error text in its own `--json` field and tell agents in SKILL.md that it is data.
+
+Hardening:
+
+- [ ] Bootstrap: join the tailnet before installing Docker, then `unset TS_AUTHKEY`; don't resend the key once the node has joined.
+- [ ] `.gitignore`: `province.yaml`, `*.tfstate*`, `.terraform/`, `.env*`, before going public. Add `govulncheck` to verify and CI.
+
+Not examined yet (second audit run): restoring a move archive from a guest that ran untrusted code; hosts with `insecure: true` while a guest shares their LAN.
 
 ## 2. One clean backend seam
 
