@@ -17,8 +17,8 @@ Anything else belongs to the host platform (Proxmox, Incus) or to the user's rec
 Unit tests use fakes. These run the real thing.
 
 - [x] **Generated tofu configs against the real providers.** `scripts/tofu-validate.sh`, CI job `tofu-validate`.
-- [ ] **Recipes in a real Debian 13 container.** `internal/bootstrap/recipe_container_test.go` (`-tags integration`), CI job `recipe-container`: real apt, mise and git, run twice; checks the package, the tool on `PATH` as sshd and a login shell see it, the dotfiles clone and `install.sh`, and the `run` command. Written; tick when the job is green.
-- [ ] **Plan against a real Incus.** `scripts/e2e-incus.sh`, CI job `incus`: the real `incus query` preflight and a real `tofu plan` on every push. Written; tick when the job is green.
+- [x] **Recipes in a real Debian 13 container.** `internal/bootstrap/recipe_container_test.go` (`-tags integration`), CI job `recipe-container`: real apt, mise and git, run twice; checks the package, the tool on `PATH` as sshd and a login shell see it, the dotfiles clone and `install.sh`, and the `run` command.
+- [x] **Plan against a real Incus.** `scripts/e2e-incus.sh`, CI job `incus`: the real `incus query` preflight and a real `tofu plan` on every push.
 - [ ] **Full lifecycle on a real Incus.** The same script goes on to create, bootstrap, recipe, show, provision and destroy when the repo has these Actions settings:
   - secret `TS_AUTHKEY`: a tagged Tailscale auth key used only for CI (reusable, ephemeral is fine);
   - secret `TS_API_KEY`: so destroy removes the tailnet node;
