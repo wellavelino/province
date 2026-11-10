@@ -37,7 +37,7 @@ Confirmed (low):
 
 Cheap fixes for leads that need an outside fact to confirm:
 
-- [ ] CI: set the Tailscale secrets on the e2e step only, run that job only on pushes to `main`, pin actions by commit SHA.
+- [x] CI: set the Tailscale secrets on the e2e step only, run that job only on pushes to `main`, pin actions by commit SHA.
 - [ ] `env create --apply`: refuse an env marked `tofu_out_of_sync`.
 - [ ] Re-home after a move: validate the env name and use the directory that matched.
 - [ ] Print the MagicDNS name the node actually got, not the bare env name, in the `ssh` hint.
