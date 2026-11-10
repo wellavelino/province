@@ -58,3 +58,13 @@ func (g incusGuest) Status(ctx context.Context) (string, error) {
 }
 
 func (g incusGuest) StartHint() string { return fmt.Sprintf("`incus start %s:%s`", g.remote, g.name) }
+
+// incusStatus is the status of container name in list, or LiveMissing.
+func incusStatus(list []incus.Instance, name string) string {
+	for _, in := range list {
+		if in.Name == name && in.Type != "virtual-machine" {
+			return in.Status
+		}
+	}
+	return LiveMissing
+}

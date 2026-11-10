@@ -31,7 +31,7 @@ Unit tests use fakes. These run the real thing.
 Confirmed (low):
 
 - [x] `guest move --start`: when the final start fails, still re-home the env (or mark it out of sync). Until fixed, move province envs without `--start` and start them by hand.
-- [ ] Before acting on a Proxmox env's guest (expose, provision, destroy), check that the guest at its VMID is named after the env; count VMIDs recorded in the state dir as used. Same check for Incus via `user.province.env`.
+- [x] Before acting on a Proxmox env's guest (expose, provision, destroy), check that the guest at its VMID is named after the env; count VMIDs recorded in the state dir as used. Same check for Incus via `user.province.env`.
 - [ ] `env destroy`: delete the tailnet device by an ID stored at bootstrap, not by hostname; skip the delete for an env that never joined.
 - [ ] `env expose`: accept the guest's reported name only if it ends in `.ts.net` and starts with the env name; escape control characters in text output.
 

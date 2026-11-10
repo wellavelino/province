@@ -34,11 +34,29 @@ type backend interface {
 	prepare(ctx context.Context, md *Metadata) error
 	// guest returns the env's container for exec and status.
 	guest(md *Metadata) (guest, error)
+	// verify checks, read-only, that the guest at the env's recorded
+	// address is the env's own container. found is false when nothing is
+	// there; another guest there is a Preflight error naming it.
+	verify(ctx context.Context, md *Metadata) (found bool, err error)
 	// status is one created env's live status, or LiveMissing.
-	status(ctx context.Context, md *Metadata) (string, error)
+	status(ctx context.Context, md *Metadata) (live, error)
 	// statuses is the live status of several created envs on this host,
 	// in order, with one listing call.
-	statuses(ctx context.Context, mds []*Metadata) ([]string, error)
+	statuses(ctx context.Context, mds []*Metadata) ([]live, error)
+}
+
+// live is what a host reports for one env's guest. Err is set (and Status
+// is LiveUnknown) when the guest there is not the env's.
+type live struct {
+	Status string
+	Err    error
+}
+
+// notOurs is the error for a guest that sits where env md's guest should
+// be but is not it.
+func notOurs(md *Metadata, h config.Host, found, fix string) error {
+	return errs.Preflightf("%s on %s is %s, not env %s's container: province leaves it alone; %s",
+		md.guestLabel(), h.Name, found, md.Name, fix)
 }
 
 // planned is what plan decided for a guest that does not exist yet.
@@ -119,6 +137,15 @@ func (b pveBackend) plan(ctx context.Context, md *Metadata) (planned, error) {
 	if p.VMID == 0 {
 		used, w := vmids.Used(ctx, b.m.Cfg.ProxmoxHosts(), b.m.Client)
 		p.Warnings = w
+		// An env whose guest is gone still owns its VMID: its records,
+		// destroy included, act on that number.
+		recorded, err := b.m.recordedVMIDs()
+		if err != nil {
+			return planned{}, err
+		}
+		for id := range recorded {
+			used[id] = true
+		}
 		p.VMID = vmids.LowestFree(used, b.m.Cfg.VMIDStart)
 	}
 	return p, nil
@@ -170,30 +197,62 @@ func (b pveBackend) guest(md *Metadata) (guest, error) {
 	return pveGuest{host: b.m.Host(b.h), name: b.h.Name, vmid: md.VMID}, nil
 }
 
-func (b pveBackend) status(ctx context.Context, md *Metadata) (string, error) {
-	c, err := b.m.Client(b.h)
-	if err != nil {
-		return "", err
+// identify finds env md's guest in guests by VMID. g is nil when no guest
+// has the VMID; err is set when the guest there is not an LXC named after
+// the env (tofu sets the hostname, which PVE reports as the name).
+func (b pveBackend) identify(guests []proxmox.Guest, md *Metadata) (g *proxmox.Guest, err error) {
+	i := slices.IndexFunc(guests, func(g proxmox.Guest) bool { return g.VMID == md.VMID })
+	if i < 0 {
+		return nil, nil
 	}
-	return c.GuestStatus(ctx, b.h.Node, proxmox.TypeLXC, md.VMID)
+	g = &guests[i]
+	if g.Type == proxmox.TypeLXC && g.Name == md.Name {
+		return g, nil
+	}
+	return g, notOurs(md, b.h, fmt.Sprintf("%s %q", g.Type, g.Name), fmt.Sprintf(
+		"if it is %s's container renamed, rename it back (`pct set %d --hostname %s` on %s); if %s's container is gone, remove %s by hand",
+		md.Name, md.VMID, md.Name, b.h.Name, md.Name, b.m.dir(md.Name)))
 }
 
-func (b pveBackend) statuses(ctx context.Context, mds []*Metadata) ([]string, error) {
+func (b pveBackend) list(ctx context.Context) ([]proxmox.Guest, error) {
 	c, err := b.m.Client(b.h)
 	if err != nil {
 		return nil, err
 	}
-	guests, err := c.ListGuests(ctx, b.h.Node)
+	return c.ListGuests(ctx, b.h.Node)
+}
+
+func (b pveBackend) verify(ctx context.Context, md *Metadata) (bool, error) {
+	guests, err := b.list(ctx)
+	if err != nil {
+		return false, &errs.Error{Kind: errs.Preflight, Err: err}
+	}
+	g, err := b.identify(guests, md)
+	return g != nil, err
+}
+
+func (b pveBackend) status(ctx context.Context, md *Metadata) (live, error) {
+	st, err := b.statuses(ctx, []*Metadata{md})
+	if err != nil {
+		return live{}, err
+	}
+	return st[0], nil
+}
+
+func (b pveBackend) statuses(ctx context.Context, mds []*Metadata) ([]live, error) {
+	guests, err := b.list(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, len(mds))
+	out := make([]live, len(mds))
 	for i, md := range mds {
-		out[i] = LiveMissing
-		for _, g := range guests {
-			if g.VMID == md.VMID && g.Type == proxmox.TypeLXC {
-				out[i] = g.Status
-			}
+		switch g, err := b.identify(guests, md); {
+		case g == nil, g.Type != proxmox.TypeLXC: // the env's container is gone
+			out[i] = live{Status: LiveMissing}
+		case err != nil:
+			out[i] = live{Status: LiveUnknown, Err: err}
+		default:
+			out[i] = live{Status: g.Status}
 		}
 	}
 	return out, nil
@@ -272,36 +331,62 @@ func (b incusBackend) guest(md *Metadata) (guest, error) {
 	return incusGuest{c: c, remote: b.h.Remote, name: md.Name}, nil
 }
 
-func (b incusBackend) status(ctx context.Context, md *Metadata) (string, error) {
-	st, err := b.statuses(ctx, []*Metadata{md})
-	if err != nil {
-		return "", err
-	}
-	return st[0], nil
-}
-
-func (b incusBackend) statuses(ctx context.Context, mds []*Metadata) ([]string, error) {
+func (b incusBackend) list(ctx context.Context) ([]incus.Instance, error) {
 	c, err := b.client()
 	if err != nil {
 		return nil, err
 	}
-	list, err := c.Instances(ctx)
+	return c.Instances(ctx)
+}
+
+// identify finds env md's instance in list by name. in is nil when there
+// is none; err is set when it is not a container carrying the env's name
+// in user.province.env (which province's tofu config sets).
+func (b incusBackend) identify(list []incus.Instance, md *Metadata) (in *incus.Instance, err error) {
+	i := slices.IndexFunc(list, func(in incus.Instance) bool { return in.Name == md.Name })
+	if i < 0 {
+		return nil, nil
+	}
+	in = &list[i]
+	if in.Type != "virtual-machine" && in.Env == md.Name {
+		return in, nil
+	}
+	return in, notOurs(md, b.h, fmt.Sprintf("a %s with %s=%q", in.Type, incus.EnvKey, in.Env),
+		fmt.Sprintf("if %s's container is gone, remove %s by hand", md.Name, b.m.dir(md.Name)))
+}
+
+func (b incusBackend) verify(ctx context.Context, md *Metadata) (bool, error) {
+	list, err := b.list(ctx)
+	if err != nil {
+		return false, &errs.Error{Kind: errs.Preflight, Err: err}
+	}
+	in, err := b.identify(list, md)
+	return in != nil, err
+}
+
+func (b incusBackend) status(ctx context.Context, md *Metadata) (live, error) {
+	st, err := b.statuses(ctx, []*Metadata{md})
+	if err != nil {
+		return live{}, err
+	}
+	return st[0], nil
+}
+
+func (b incusBackend) statuses(ctx context.Context, mds []*Metadata) ([]live, error) {
+	list, err := b.list(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, len(mds))
+	out := make([]live, len(mds))
 	for i, md := range mds {
-		out[i] = incusStatus(list, md.Name)
-	}
-	return out, nil
-}
-
-// incusStatus is the status of container name in list, or LiveMissing.
-func incusStatus(list []incus.Instance, name string) string {
-	for _, in := range list {
-		if in.Name == name && in.Type != "virtual-machine" {
-			return in.Status
+		switch in, err := b.identify(list, md); {
+		case in == nil, in.Type == "virtual-machine": // the env's container is gone
+			out[i] = live{Status: LiveMissing}
+		case err != nil:
+			out[i] = live{Status: LiveUnknown, Err: err}
+		default:
+			out[i] = live{Status: in.Status}
 		}
 	}
-	return LiveMissing
+	return out, nil
 }

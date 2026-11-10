@@ -104,7 +104,14 @@ func (m *Manager) runningEnv(ctx context.Context, name, verb string) (*Metadata,
 	if err != nil {
 		return nil, nil, err
 	}
-	g, err := m.backendFor(h).guest(md)
+	b := m.backendFor(h)
+	switch found, err := b.verify(ctx, md); {
+	case err != nil:
+		return nil, nil, err
+	case !found:
+		return nil, nil, errs.Preflightf("env %s's container (%s) is not on %s", name, md.guestRef(h), md.Host)
+	}
+	g, err := b.guest(md)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -384,7 +384,7 @@ func TestCreateKeepsTheVMIDOfACreatedEnv(t *testing.T) {
 	}
 	_, _ = r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}) // bootstrap_failed, vmid 105 from tofu
 	r.hosts["pve1"].Fail = nil
-	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Type: "lxc"}}
+	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Name: "demo", Type: "lxc"}}
 	res, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true})
 	if err != nil || res.VMID != 105 {
 		t.Fatalf("re-run: %+v, %v", res, err)

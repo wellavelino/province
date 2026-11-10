@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/wellavelino/province/internal/errs"
+	"github.com/wellavelino/province/internal/proxmox"
 )
 
 type fakeTailnet struct {
@@ -26,6 +27,7 @@ func bootstrapped(t *testing.T, r *rig) {
 	t.Helper()
 	seed(t, r, Metadata{Name: "demo", Host: "pve1", Node: "pve1", VMID: 105, Status: StatusBootstrapped})
 	r.hosts["pve1"].State = "running"
+	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Name: "demo", Status: "running", Type: proxmox.TypeLXC}}
 }
 
 func TestDestroyWithoutYesTouchesNothing(t *testing.T) {

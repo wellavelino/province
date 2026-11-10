@@ -77,7 +77,7 @@ func TestIncusHumanOutputAndProvision(t *testing.T) {
 	if o.code != 0 || !strings.Contains(o.stdout, "(instance api)") || !strings.Contains(o.stdout, "Applied recipe go") {
 		t.Fatalf("apply: %+v", o)
 	}
-	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "running"}}
+	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "running", Env: "api"}}
 	o = runCLI(t, d, "env", "provision", "api")
 	if o.code != 0 || !strings.Contains(o.stdout, "Applied recipe go to api") {
 		t.Fatalf("provision: %+v", o)

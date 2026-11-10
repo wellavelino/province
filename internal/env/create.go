@@ -131,6 +131,12 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err != nil {
 		return nil, err
 	}
+	if md.created() && md.Status != StatusPlanned {
+		// tofu apply and the bootstrap act on the recorded guest.
+		if _, err := b.verify(ctx, md); err != nil {
+			return nil, err
+		}
+	}
 	p, err := b.plan(ctx, md)
 	if err != nil {
 		return nil, err

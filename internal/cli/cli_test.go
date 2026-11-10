@@ -483,7 +483,7 @@ func TestMovingAProvinceEnvReHomesIt(t *testing.T) {
 	if !imported {
 		t.Fatalf("tofu calls = %v", w.tofu.Calls())
 	}
-	w.api["pve2"].Guests = []proxmox.Guest{{VMID: 900, Status: "stopped", Type: "lxc"}}
+	w.api["pve2"].Guests = []proxmox.Guest{{VMID: 900, Name: "demo", Status: "stopped", Type: "lxc"}}
 	o = w.run("--json", "env", "show", "demo")
 	var show map[string]any
 	decodeOne(t, o.stdout, &show)

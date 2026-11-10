@@ -15,11 +15,15 @@ import (
 	"github.com/wellavelino/province/internal/run"
 )
 
+// EnvKey is the instance config key province sets to the env's name.
+const EnvKey = "user.province.env"
+
 // Instance is one instance as the server reports it.
 type Instance struct {
 	Name   string
 	Type   string // container | virtual-machine
 	Status string // lowercase: running, stopped, frozen, error, ...
+	Env    string // config user.province.env: the env that created it, if any
 }
 
 // Client is what province asks of one Incus host.
@@ -80,16 +84,17 @@ func (c *CLI) query(ctx context.Context, path string, v any) error {
 // Instances implements Client.
 func (c *CLI) Instances(ctx context.Context) ([]Instance, error) {
 	var raw []struct {
-		Name   string `json:"name"`
-		Type   string `json:"type"`
-		Status string `json:"status"`
+		Name   string            `json:"name"`
+		Type   string            `json:"type"`
+		Status string            `json:"status"`
+		Config map[string]string `json:"config"`
 	}
 	if err := c.query(ctx, "/1.0/instances", &raw); err != nil {
 		return nil, err
 	}
 	out := make([]Instance, 0, len(raw))
 	for _, r := range raw {
-		out = append(out, Instance{Name: r.Name, Type: r.Type, Status: strings.ToLower(r.Status)})
+		out = append(out, Instance{Name: r.Name, Type: r.Type, Status: strings.ToLower(r.Status), Env: r.Config[EnvKey]})
 	}
 	return out, nil
 }

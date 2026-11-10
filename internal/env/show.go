@@ -35,8 +35,12 @@ func (m *Manager) Show(ctx context.Context, name string) (*View, error) {
 	// Like list: a host that cannot be asked (gone from the config, token
 	// unset, unreachable) makes the live status unknown, not an error.
 	h, err := m.hostOf(md)
+	var lv live
 	if err == nil {
-		v.LiveStatus, err = m.backendFor(h).status(ctx, md)
+		lv, err = m.backendFor(h).status(ctx, md)
+	}
+	if err == nil {
+		v.LiveStatus, err = lv.Status, lv.Err
 	}
 	if err != nil {
 		v.LiveStatus, v.Error = LiveUnknown, err.Error()

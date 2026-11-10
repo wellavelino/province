@@ -33,9 +33,9 @@ func TestListOneCallPerHostAndUnreachableIsUnknown(t *testing.T) {
 		Metadata{Name: "e", Host: "pve1", Node: "pve1", Status: StatusPlanned},
 	)
 	r.clients["pve1"].Guests = []proxmox.Guest{
-		{VMID: 105, Status: "running", Type: "lxc"},
-		{VMID: 106, Status: "stopped", Type: "lxc"},
-		{VMID: 107, Status: "running", Type: "qemu"}, // same id, wrong type: not ours
+		{VMID: 105, Name: "a", Status: "running", Type: "lxc"},
+		{VMID: 106, Name: "b", Status: "stopped", Type: "lxc"},
+		{VMID: 107, Name: "c", Status: "running", Type: "qemu"}, // same id, wrong type: not ours
 	}
 	r.clients["pve2"].Err = errors.New("dial tcp: i/o timeout")
 
@@ -78,7 +78,7 @@ func TestListEmptyStateDir(t *testing.T) {
 func TestShow(t *testing.T) {
 	r := newRig(t)
 	seed(t, r, Metadata{Name: "demo", Host: "pve1", Node: "pve1", VMID: 105, Status: StatusBootstrapped, TailscaleIP: "100.64.0.7"})
-	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Status: "running", Type: "lxc"}}
+	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Name: "demo", Status: "running", Type: "lxc"}}
 	v, err := r.m.Show(ctx, "demo")
 	if err != nil {
 		t.Fatal(err)

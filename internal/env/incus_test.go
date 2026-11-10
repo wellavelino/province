@@ -85,7 +85,7 @@ func TestIncusListShowAndProvisionRefusalWhenStopped(t *testing.T) {
 		Metadata{Name: "gone", Backend: "incus", Host: "box", Instance: "gone", Status: StatusBootstrapped},
 		Metadata{Name: "web", Host: "pve1", Node: "pve1", VMID: 105, Status: StatusBootstrapped},
 	)
-	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "stopped"}}
+	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "stopped", Env: "api"}}
 	r.clients["pve1"].Guests = nil
 	views, err := r.m.List(ctx)
 	if err != nil {
@@ -112,14 +112,14 @@ func TestIncusDestroy(t *testing.T) {
 	r := newRig(t)
 	box := withIncus(t, r)
 	seed(t, r, Metadata{Name: "api", Backend: "incus", Host: "box", Instance: "api", Status: StatusBootstrapped})
-	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "running"}}
+	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "running", Env: "api"}}
 	r.m.Tailnet = &fakeTailnet{j: r.j, deleted: true}
 	res, err := r.m.Destroy(ctx, "api", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := r.dir("api")
-	want := []string{"box Instances", "box Exec api tailscale logout", "tailnet delete api", "tofu Init " + dir, "tofu Destroy " + dir}
+	want := []string{"box Instances", "box Instances", "box Exec api tailscale logout", "tailnet delete api", "tofu Init " + dir, "tofu Destroy " + dir}
 	if got := r.j.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s", strings.Join(got, "\n"))
 	}

@@ -50,12 +50,21 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 		return nil, err
 	}
 	if md.Status != StatusPlanned && md.created() {
-		g, err := m.backendFor(h).guest(md)
+		b := m.backendFor(h)
+		// Before any change: tofu destroy and the logout act on whatever
+		// guest has the env's VMID (or name), so it must be the env's own.
+		found, err := b.verify(ctx, md)
+		if err != nil {
+			return nil, err
+		}
+		g, err := b.guest(md)
 		if err != nil {
 			return nil, err
 		}
 		// exec fails on a stopped container, so only log out a running one.
 		switch st, err := g.Status(ctx); {
+		case !found:
+			m.logf("info: %s's container is gone from %s; skipping tailscale logout", name, md.Host)
 		case err != nil:
 			warn("skipped tailscale logout in %s: status check failed: %v", name, err)
 		case st != "running":

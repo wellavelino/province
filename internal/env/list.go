@@ -71,18 +71,49 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 		}
 		// hostOf also refuses a host whose backend changed under the env.
 		h, err := m.hostOf(mds[0])
-		var live []string
+		var lv []live
 		if err == nil {
-			live, err = m.backendFor(h).statuses(ctx, mds)
+			lv, err = m.backendFor(h).statuses(ctx, mds)
 		}
 		for k, i := range idx {
 			if err != nil {
 				views[i].LiveStatus, views[i].Error = LiveUnknown, err.Error()
 				continue
 			}
-			views[i].LiveStatus = live[k]
+			views[i].LiveStatus = lv[k].Status
+			if lv[k].Err != nil {
+				views[i].Error = lv[k].Err.Error()
+			}
 		}
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views, nil
+}
+
+// recordedVMIDs returns every VMID an env in state_dir records.
+func (m *Manager) recordedVMIDs() (map[int]bool, error) {
+	ids := map[int]bool{}
+	entries, err := os.ReadDir(m.Cfg.StateDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ids, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		md, err := readMetadata(filepath.Join(m.Cfg.StateDir, e.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if md.VMID != 0 {
+			ids[md.VMID] = true
+		}
+	}
+	return ids, nil
 }

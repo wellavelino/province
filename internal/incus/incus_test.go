@@ -39,12 +39,12 @@ func TestExecFailureNamesInstanceAndRemote(t *testing.T) {
 func TestInstancesLowercasesStatus(t *testing.T) {
 	f := &runtest.Fake{T: t}
 	f.On([]string{"incus", "query", "box:/1.0/instances?project=dev&recursion=1"},
-		runtest.Response{Stdout: `[{"name":"api","type":"container","status":"Running"},{"name":"db","type":"container","status":"Stopped"}]`})
+		runtest.Response{Stdout: `[{"name":"api","type":"container","status":"Running","config":{"user.province.env":"api"}},{"name":"db","type":"container","status":"Stopped"}]`})
 	got, err := (&CLI{Runner: f, Remote: "box", Project: "dev"}).Instances(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != (Instance{Name: "api", Type: "container", Status: "running"}) || got[1].Status != "stopped" {
+	if len(got) != 2 || got[0] != (Instance{Name: "api", Type: "container", Status: "running", Env: "api"}) || got[1].Env != "" || got[1].Status != "stopped" {
 		t.Fatalf("got %+v", got)
 	}
 }
