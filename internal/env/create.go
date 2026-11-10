@@ -183,7 +183,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := b.adopt(out, md); err != nil {
 		return nil, fmt.Errorf("tofu output in %s has %w", dir, err)
 	}
-	md.Status, md.TailscaleIP = StatusApplied, ""
+	md.Status, md.TailscaleIP, md.TailscaleDeviceID = StatusApplied, "", ""
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
@@ -198,6 +198,10 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 			o.Name, md.guestRef(host), host.Name, err, dir, o.Name)
 	}
 	md.Status, md.TailscaleIP, md.PublicURL = StatusBootstrapped, ip, ""
+	if w := m.recordDevice(ctx, md); w != "" {
+		m.logf("warning: %s", w)
+		res.Warnings = append(res.Warnings, w)
+	}
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
@@ -231,6 +235,25 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	res.Status, res.VMID, res.Instance, res.TailscaleIP, res.PublicURL, res.Changes = md.Status, md.VMID, md.Instance, ip, md.PublicURL, true
 	res.SSH = fmt.Sprintf("ssh %s@%s", m.Cfg.User, o.Name)
 	return res, nil
+}
+
+// recordDevice looks the env's node up in the Tailscale API (name, tag and
+// the address bootstrap reported must agree) and records its ID, so destroy
+// deletes that device and no namesake. It returns a warning when it could
+// not; without TS_API_KEY it does nothing.
+func (m *Manager) recordDevice(ctx context.Context, md *Metadata) string {
+	if m.Tailnet == nil {
+		return ""
+	}
+	id, err := m.Tailnet.FindDevice(ctx, md.Name, md.TailscaleIP)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("tailnet device ID of %s not recorded: %v; destroy will delete its node only if the device named %s holds %s", md.Name, err, md.Name, md.TailscaleIP)
+	case id == "":
+		return fmt.Sprintf("no tailnet device named %s with tag %s holds %s, so its ID is not recorded; destroy will delete its node only if one does then", md.Name, m.Cfg.Tailscale.Tag, md.TailscaleIP)
+	}
+	md.TailscaleDeviceID = id
+	return ""
 }
 
 func (m *Manager) createHost(o CreateOpts, md *Metadata) (config.Host, error) {

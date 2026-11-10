@@ -12,20 +12,33 @@ import (
 	"github.com/wellavelino/province/internal/proxmox"
 )
 
+// fakeTailnet journals each call. found is FindDevice's answer; deleted
+// and err are DeleteDeviceByHostname's.
 type fakeTailnet struct {
 	j       interface{ Add(string) }
+	found   string
 	deleted bool
 	err     error
 }
 
-func (f *fakeTailnet) DeleteDeviceByHostname(_ context.Context, h string) (bool, error) {
+func (f *fakeTailnet) FindDevice(_ context.Context, h, ip string) (string, error) {
+	f.j.Add("tailnet find " + h + " " + ip)
+	return f.found, nil
+}
+
+func (f *fakeTailnet) DeleteDevice(_ context.Context, id string) error {
+	f.j.Add("tailnet delete id " + id)
+	return nil
+}
+
+func (f *fakeTailnet) DeleteDeviceByHostname(_ context.Context, h, _ string) (bool, error) {
 	f.j.Add("tailnet delete " + h)
 	return f.deleted, f.err
 }
 
 func bootstrapped(t *testing.T, r *rig) {
 	t.Helper()
-	seed(t, r, Metadata{Name: "demo", Host: "pve1", Node: "pve1", VMID: 105, Status: StatusBootstrapped})
+	seed(t, r, Metadata{Name: "demo", Host: "pve1", Node: "pve1", VMID: 105, Status: StatusBootstrapped, TailscaleIP: "100.64.0.7"})
 	r.hosts["pve1"].State = "running"
 	r.clients["pve1"].Guests = []proxmox.Guest{{VMID: 105, Name: "demo", Status: "running", Type: proxmox.TypeLXC}}
 }
@@ -88,7 +101,7 @@ func TestDestroyTailscaleStepsAreBestEffort(t *testing.T) {
 	bootstrapped(t, r)
 	r.m.Tailnet = &fakeTailnet{j: r.j, deleted: false}
 	res, err = r.m.Destroy(ctx, "demo", true)
-	if err != nil || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "no tailnet node") {
+	if err != nil || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "NOT revoked") {
 		t.Fatalf("not found: %+v, %v", res, err)
 	}
 }

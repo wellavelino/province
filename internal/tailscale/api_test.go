@@ -9,10 +9,10 @@ import (
 )
 
 const devices = `{"devices":[
- {"id":"111","hostname":"demo","name":"demo.tail-abc.ts.net","tags":["tag:dev"]},
+ {"id":"111","hostname":"demo","name":"demo.tail-abc.ts.net","addresses":["100.64.0.7"],"tags":["tag:dev"]},
  {"id":"222","hostname":"laptop","name":"laptop.tail-abc.ts.net"},
  {"id":"333","hostname":"web","name":"web.tail-abc.ts.net"},
- {"id":"444","hostname":"Web Server","name":"web-1.tail-abc.ts.net","tags":["tag:dev"]}
+ {"id":"444","hostname":"Web Server","name":"web-1.tail-abc.ts.net","addresses":["100.64.0.44"],"tags":["tag:dev"]}
 ]}`
 
 type tsServer struct {
@@ -42,7 +42,7 @@ func newServer(t *testing.T, body string) (*Client, *tsServer) {
 
 func TestDeletesTheTaggedMatch(t *testing.T) {
 	c, s := newServer(t, devices)
-	ok, err := c.DeleteDeviceByHostname(context.Background(), "demo")
+	ok, err := c.DeleteDeviceByHostname(context.Background(), "demo", "100.64.0.7")
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
@@ -58,7 +58,7 @@ func TestDeletesTheTaggedMatch(t *testing.T) {
 
 func TestMatchesByMagicDNSName(t *testing.T) {
 	c, s := newServer(t, devices)
-	ok, err := c.DeleteDeviceByHostname(context.Background(), "web-1")
+	ok, err := c.DeleteDeviceByHostname(context.Background(), "web-1", "100.64.0.44")
 	if err != nil || !ok || len(s.deleted) != 1 || s.deleted[0] != "444" {
 		t.Fatalf("ok=%v err=%v deleted=%v", ok, err, s.deleted)
 	}
@@ -67,7 +67,7 @@ func TestMatchesByMagicDNSName(t *testing.T) {
 func TestNeverDeletesUntaggedOrMissing(t *testing.T) {
 	c, s := newServer(t, devices)
 	for _, h := range []string{"laptop", "web", "nothere"} {
-		ok, err := c.DeleteDeviceByHostname(context.Background(), h)
+		ok, err := c.DeleteDeviceByHostname(context.Background(), h, "100.64.0.7")
 		if err != nil || ok {
 			t.Errorf("%s: ok=%v err=%v", h, ok, err)
 		}
@@ -79,7 +79,7 @@ func TestNeverDeletesUntaggedOrMissing(t *testing.T) {
 
 func TestAmbiguousMatchDeletesNothing(t *testing.T) {
 	c, s := newServer(t, `{"devices":[{"id":"1","hostname":"demo","tags":["tag:dev"]},{"id":"2","hostname":"demo","tags":["tag:dev"]}]}`)
-	ok, err := c.DeleteDeviceByHostname(context.Background(), "demo")
+	ok, err := c.DeleteDeviceByHostname(context.Background(), "demo", "100.64.0.7")
 	if err == nil || ok || len(s.deleted) != 0 {
 		t.Fatalf("ok=%v err=%v deleted=%v", ok, err, s.deleted)
 	}
@@ -92,7 +92,46 @@ func TestAPIErrorSurfaces(t *testing.T) {
 	defer srv.Close()
 	c := New("k", "-", "tag:dev")
 	c.BaseURL = srv.URL
-	if _, err := c.DeleteDeviceByHostname(context.Background(), "demo"); err == nil || !strings.Contains(err.Error(), "401") {
+	if _, err := c.DeleteDeviceByHostname(context.Background(), "demo", "100.64.0.7"); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestNameMatchAtAnotherAddressIsNotDeleted(t *testing.T) {
+	c, s := newServer(t, devices)
+	for _, ip := range []string{"100.64.0.99", ""} {
+		ok, err := c.DeleteDeviceByHostname(context.Background(), "demo", ip)
+		if err != nil || ok {
+			t.Errorf("%q: ok=%v err=%v", ip, ok, err)
+		}
+	}
+	if len(s.deleted) != 0 {
+		t.Fatalf("deleted = %v", s.deleted)
+	}
+}
+
+func TestFindDeviceNeedsNameTagAndAddress(t *testing.T) {
+	c, _ := newServer(t, `{"devices":[
+ {"id":"OWN","hostname":"demo","addresses":["100.64.0.7","fd7a::7"],"tags":["tag:dev"]},
+ {"id":"STALE","hostname":"demo","addresses":["100.64.0.99"],"tags":["tag:dev"]},
+ {"id":"UNTAGGED","hostname":"demo","addresses":["100.64.0.8"]}
+]}`)
+	for ip, want := range map[string]string{"100.64.0.7": "OWN", "100.64.0.8": "", "100.64.0.5": ""} {
+		if got, err := c.FindDevice(context.Background(), "demo", ip); err != nil || got != want {
+			t.Errorf("%s: got %q err %v, want %q", ip, got, err, want)
+		}
+	}
+	if got, err := c.FindDevice(context.Background(), "other", "100.64.0.7"); err != nil || got != "" {
+		t.Errorf("other: %q %v", got, err)
+	}
+}
+
+func TestDeleteDeviceByID(t *testing.T) {
+	c, s := newServer(t, devices)
+	if err := c.DeleteDevice(context.Background(), "nABC123"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.deleted) != 1 || s.deleted[0] != "nABC123" {
+		t.Fatalf("deleted = %v", s.deleted)
 	}
 }

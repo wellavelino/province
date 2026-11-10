@@ -111,7 +111,7 @@ func TestIncusListShowAndProvisionRefusalWhenStopped(t *testing.T) {
 func TestIncusDestroy(t *testing.T) {
 	r := newRig(t)
 	box := withIncus(t, r)
-	seed(t, r, Metadata{Name: "api", Backend: "incus", Host: "box", Instance: "api", Status: StatusBootstrapped})
+	seed(t, r, Metadata{Name: "api", Backend: "incus", Host: "box", Instance: "api", Status: StatusBootstrapped, TailscaleIP: "100.64.0.9"})
 	box.List = []incus.Instance{{Name: "api", Type: "container", Status: "running", Env: "api"}}
 	r.m.Tailnet = &fakeTailnet{j: r.j, deleted: true}
 	res, err := r.m.Destroy(ctx, "api", true)

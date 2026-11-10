@@ -74,18 +74,7 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 				warn("tailscale logout in %s failed: %v", name, err)
 			}
 		}
-		switch {
-		case m.Tailnet == nil:
-			warn("TS_API_KEY is not set: the tailnet node %s stays listed (offline) in the admin console; delete it there", name)
-		default:
-			deleted, err := m.Tailnet.DeleteDeviceByHostname(ctx, name)
-			switch {
-			case err != nil:
-				warn("tailnet node %s not deleted: %v", name, err)
-			case !deleted:
-				warn("no tailnet node named %s with tag %s found", name, m.Cfg.Tailscale.Tag)
-			}
-		}
+		m.revokeNode(ctx, md, warn)
 	}
 
 	dir := m.dir(name)
@@ -100,4 +89,37 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 	}
 	res.Destroyed = true
 	return res, nil
+}
+
+// revokeNode deletes env md's tailnet device: by the ID recorded at
+// bootstrap, else by name and tag only if the device so named holds the
+// recorded address. An env that never joined is skipped: a device of its
+// name is someone else's.
+func (m *Manager) revokeNode(ctx context.Context, md *Metadata, warn func(string, ...any)) {
+	name := md.Name
+	if md.Status != StatusBootstrapped && md.TailscaleDeviceID == "" && md.TailscaleIP == "" {
+		m.logf("info: %s never joined the tailnet; no tailnet node to delete", name)
+		return
+	}
+	notRevoked := func(why string) {
+		warn("tailnet node %s NOT revoked (%s); delete it in the admin console", name, why)
+	}
+	switch {
+	case m.Tailnet == nil:
+		notRevoked("TS_API_KEY is not set")
+	case md.TailscaleDeviceID != "":
+		if err := m.Tailnet.DeleteDevice(ctx, md.TailscaleDeviceID); err != nil {
+			notRevoked(fmt.Sprintf("deleting device %s: %v", md.TailscaleDeviceID, err))
+		}
+	case md.TailscaleIP == "":
+		notRevoked("no device ID or tailnet address recorded")
+	default:
+		deleted, err := m.Tailnet.DeleteDeviceByHostname(ctx, name, md.TailscaleIP)
+		switch {
+		case err != nil:
+			notRevoked(err.Error())
+		case !deleted:
+			notRevoked(fmt.Sprintf("no device named %s with tag %s at %s", name, m.Cfg.Tailscale.Tag, md.TailscaleIP))
+		}
+	}
 }

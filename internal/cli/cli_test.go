@@ -51,9 +51,22 @@ type world struct {
 	unset    []string          // variables removed from the environment
 }
 
-type fakeTailnet struct{ calls []string }
+// fakeTailnet records each delete; FindDevice answers found.
+type fakeTailnet struct {
+	found string
+	calls []string
+}
 
-func (f *fakeTailnet) DeleteDeviceByHostname(_ context.Context, h string) (bool, error) {
+func (f *fakeTailnet) FindDevice(context.Context, string, string) (string, error) {
+	return f.found, nil
+}
+
+func (f *fakeTailnet) DeleteDevice(_ context.Context, id string) error {
+	f.calls = append(f.calls, "id "+id)
+	return nil
+}
+
+func (f *fakeTailnet) DeleteDeviceByHostname(_ context.Context, h, _ string) (bool, error) {
 	f.calls = append(f.calls, h)
 	return true, nil
 }

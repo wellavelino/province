@@ -50,7 +50,10 @@ type Metadata struct {
 	Docker      bool   `json:"docker"`
 	Tun         string `json:"tun"`
 	TailscaleIP string `json:"tailscale_ip,omitempty"`
-	Storage     string `json:"storage,omitempty"` // set when a move put the disk elsewhere
+	// TailscaleDeviceID is the env's node in the Tailscale API, looked up
+	// from the operator side after bootstrap; destroy deletes it by ID.
+	TailscaleDeviceID string `json:"tailscale_device_id,omitempty"`
+	Storage           string `json:"storage,omitempty"` // set when a move put the disk elsewhere
 	// ExposePort is published to the internet through Tailscale Funnel
 	// (https://<PublicURL> → localhost:<ExposePort> in the guest).
 	ExposePort int    `json:"expose_port,omitempty"`
@@ -65,9 +68,17 @@ type Metadata struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// Tailnet removes devices from the tailnet (Tailscale API).
+// Tailnet finds and removes devices in the tailnet (Tailscale API). Only
+// devices carrying the configured tag are matched.
 type Tailnet interface {
-	DeleteDeviceByHostname(ctx context.Context, hostname string) (deleted bool, err error)
+	// FindDevice returns the ID of the one device named hostname that
+	// holds address ip, or "" when there is none.
+	FindDevice(ctx context.Context, hostname, ip string) (id string, err error)
+	// DeleteDevice deletes the device with id.
+	DeleteDevice(ctx context.Context, id string) error
+	// DeleteDeviceByHostname deletes the one device named hostname, only
+	// if it holds address ip.
+	DeleteDeviceByHostname(ctx context.Context, hostname, ip string) (deleted bool, err error)
 }
 
 // Manager runs environment operations against one site.
