@@ -24,9 +24,11 @@ Unit tests use fakes. These run the real thing.
   - secret `TS_API_KEY`: so destroy removes the tailnet node;
   - variable `TS_TAG`: the key's tag, if it is not `tag:dev`.
 - [ ] **Full lifecycle on a real Proxmox host.** No CI equivalent (nested Proxmox needs KVM). By hand, on a spare, non-production host: `env create demo --recipe <r>`, `--apply`, `ssh`, `env provision demo`, `env destroy demo --yes`. Write down what broke.
-- [x] **Security audit.** First run done on commit d95aebf: no critical, high or medium issue; four low ones confirmed. Fixes below.
+- [x] **Security audit.** First run done on commit 67599ed: no critical, high or medium issue; four low ones confirmed. Known issues below.
 
-## 1b. Fixes from the first security audit
+## 1b. Known issues from the first security audit
+
+These are known bugs and weaknesses, listed in the open. Checked items are fixed on `main`; the rest are still open. None is rated above low. If you run province, keep its site config and state private, and read open items before relying on the feature they name.
 
 Confirmed (low):
 
