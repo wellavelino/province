@@ -31,7 +31,7 @@ Guides: [Recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Roadmap: [docs
 
 1. **Declare.** Province writes an OpenTofu config for the container, one state directory per environment (`bpg/proxmox` on Proxmox, `lxc/incus` on Incus), and shows you the plan.
 2. **Create.** With `--apply`, tofu creates and starts the container.
-3. **Bootstrap.** Province runs a script inside the new container through the host (`pct exec` on Proxmox, `incus exec` on Incus): your user and SSH keys, sudo, optional Docker, and Tailscale. From then on the env is on your tailnet.
+3. **Bootstrap.** Province runs a script inside the new container through the host (`pct exec` on Proxmox, `incus exec` on Incus): your user and SSH keys, sudo, Tailscale, then optional Docker. From then on the env is on your tailnet.
 4. **Set up.** Province applies the env's [recipe](docs/recipes.md): apt packages, tools at pinned versions (through mise), your dotfiles. `env provision` applies it again later.
 5. **Use.** `ssh dev@<name>`. Optionally publish one port on the internet with `--expose` (Tailscale Funnel).
 
@@ -324,7 +324,7 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 | Command | What it does |
 |---|---|
 | `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r]` | Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. |
-| `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, optional Docker, Tailscale. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
+| `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, Tailscale, optional Docker. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
 | `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
 | `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). |
 | `env show <name>` | One environment, live status, the ssh line and the public URL if published. |
@@ -349,7 +349,7 @@ The moved guest keeps the `onboot` value it had in the archive; the source is ke
 
 ## Secrets
 
-Secrets come only from environment variables: the Proxmox tokens, `TS_AUTHKEY` and `TS_API_KEY`. Province removes each one from its own environment once read, so child processes (ssh, tofu, installers) never inherit it; tofu gets its host's token explicitly. Secrets never appear in arguments, generated files, tofu state or output: a redactor scrubs every line province prints. The Tailscale auth key reaches a guest only on the bootstrap script's stdin.
+Secrets come only from environment variables: the Proxmox tokens, `TS_AUTHKEY` and `TS_API_KEY`. Province removes each one from its own environment once read, so child processes (ssh, tofu, installers) never inherit it; tofu gets its host's token explicitly. Secrets never appear in arguments, generated files, tofu state or output: a redactor scrubs every line province prints. The Tailscale auth key reaches a guest only on the bootstrap script's stdin, which unsets it right after `tailscale up`, before Docker or anything else is installed; a re-run on a guest already on the tailnet gets no key at all.
 
 Incus hosts add no secret: the incus remote's client certificate lives in your Incus client config (`~/.config/incus`), which province never reads.
 

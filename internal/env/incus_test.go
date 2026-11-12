@@ -39,7 +39,7 @@ func TestIncusCreateApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := r.dir("api")
-	want := []string{"box HasStoragePool default", "tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "box Exec api bash -s"}
+	want := []string{"box HasStoragePool default", "tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "box Exec api sh -c tailscale ip -4 2>/dev/null || true", "box Exec api bash -s"}
 	if got := r.j.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}

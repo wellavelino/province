@@ -123,7 +123,7 @@ func TestCreateApplyOrderAndStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 bash -s"}
+	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s"}
 	if got := r.j.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -144,8 +144,8 @@ func TestCreateAuthKeyOnlyInBootstrapStdin(t *testing.T) {
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
 		t.Fatal(err)
 	}
-	stdins := r.hosts["pve1"].ExecStdins()
-	if len(stdins) != 1 || !strings.Contains(stdins[0], "TS_AUTHKEY="+authKey+"\n") {
+	stdins := r.hosts["pve1"].ExecStdins() // the joined probe, then the bootstrap
+	if len(stdins) != 2 || stdins[0] != "" || !strings.Contains(stdins[1], "TS_AUTHKEY="+authKey+"\n") {
 		t.Fatalf("auth key not on bootstrap stdin")
 	}
 	for _, e := range r.j.Entries() {
@@ -168,6 +168,44 @@ func TestCreateAuthKeyOnlyInBootstrapStdin(t *testing.T) {
 	}
 	if strings.Contains(r.log.String(), authKey) {
 		t.Fatal("auth key logged")
+	}
+}
+
+// A re-run on a guest that already joined the tailnet (its bootstrap
+// failed after tailscale up, say in the Docker install) does not send the
+// auth key again.
+func TestCreateRerunOnJoinedGuestSendsNoKey(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].ExecOuts = map[string]string{"sh -c tailscale ip -4 2>/dev/null || true": "100.64.0.7\n"}
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	stdins := r.hosts["pve1"].ExecStdins()
+	if len(stdins) != 2 || strings.Contains(stdins[1], authKey) || !strings.Contains(stdins[1], "\nTS_AUTHKEY=''\n") {
+		t.Fatalf("bootstrap stdin for a joined guest carries the auth key or no empty TS_AUTHKEY")
+	}
+	if !strings.Contains(r.log.String(), "already on the tailnet; not sending the auth key") {
+		t.Fatalf("log = %q", r.log.String())
+	}
+	if md := r.metadata(t, "demo"); md.Status != StatusBootstrapped || md.TailscaleIP != "100.64.0.7" {
+		t.Fatalf("metadata = %+v", md)
+	}
+}
+
+// A probe that fails (the guest could not run it) counts as not joined.
+func TestCreateFailedProbeSendsKey(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].Fail = func(call string) error {
+		if call == "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true" {
+			return errors.New("pct exec 105: exit status 255")
+		}
+		return nil
+	}
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	if stdins := r.hosts["pve1"].ExecStdins(); len(stdins) != 2 || !strings.Contains(stdins[1], "TS_AUTHKEY="+authKey+"\n") {
+		t.Fatal("auth key not sent after a failed probe")
 	}
 }
 
@@ -194,7 +232,7 @@ func TestCreateBootstrapFailureKeepsStateAndRerunRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := r.dir("demo")
-	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 bash -s"}
+	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s"}
 	if got := r.j.Entries()[before:]; !slices.Equal(got, want) {
 		t.Fatalf("re-run calls = %v", got)
 	}
@@ -286,11 +324,11 @@ func TestCreateHostPreparationBeforeBootstrap(t *testing.T) {
 		if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true, Docker: c.docker}); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		want := append(c.want, "pve1 Exec 105 bash -s")
+		want := append(c.want, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s")
 		if got := r.hosts["pve1"].Calls(); !slices.Equal(got, want) {
 			t.Errorf("%s: host calls = %v, want %v", name, got, want)
 		}
-		stdin := r.hosts["pve1"].ExecStdins()[0]
+		stdin := r.hosts["pve1"].ExecStdins()[1]
 		if !strings.Contains(stdin, "P_TUN="+c.tun+"\n") {
 			t.Errorf("%s: payload tun wrong", name)
 		}
@@ -352,7 +390,7 @@ func TestCreateTailscaleSSHOffReachesPayload(t *testing.T) {
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
 		t.Fatal(err)
 	}
-	if stdin := r.hosts["pve1"].ExecStdins()[0]; !strings.Contains(stdin, "P_TS_SSH=0\n") {
+	if stdin := r.hosts["pve1"].ExecStdins()[1]; !strings.Contains(stdin, "P_TS_SSH=0\n") {
 		t.Fatal("payload does not turn Tailscale SSH off")
 	}
 }

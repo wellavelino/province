@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # province bootstrap. Runs as root inside a new container through
 # `pct exec <vmid> -- bash -s`; province prepends shell-quoted P_* and
-# TS_AUTHKEY assignments on stdin. Safe to re-run.
+# TS_AUTHKEY assignments on stdin. Safe to re-run. TS_AUTHKEY is empty when
+# province found the guest already on the tailnet: a joined node never gets
+# the key again. The key is unset right after `tailscale up`, before Docker
+# or anything else is installed.
 # Everything goes to stderr except the final PROVINCE_TS_IP=<ip> line.
 # The operator's ssh may forward a locale the fresh guest lacks; use one
 # that always exists so no tool warns about setlocale.
@@ -18,7 +21,7 @@ log() { printf 'province-bootstrap: %s\n' "$*" >&2; }
 check_inputs() {
   : "${P_USER:?}" "${P_KEYS:?}" "${P_HOSTNAME:?}" "${P_TAG:?}" "${P_TUN:?}" "${P_DOCKER:?}" "${P_TS_SSH:?}"
   : "${P_LOCALES?}" # may be empty
-  : "${TS_AUTHKEY:?}"
+  : "${TS_AUTHKEY?}" # empty when the guest is already on the tailnet
 }
 
 wait_network() {
@@ -134,13 +137,19 @@ join_tailnet() {
     # Bootstrap runs over `pct exec`, not the guest's SSH, so toggling
     # Tailscale SSH cannot cut this session.
     tailscale set --ssh="$ssh" --accept-risk=lose-ssh
+    unset TS_AUTHKEY
     return 0
+  fi
+  if [ -z "$TS_AUTHKEY" ]; then
+    log "not on the tailnet and province sent no auth key (it saw the guest joined); re-run the bootstrap"
+    return 1
   fi
   trap 'rm -f "$KEYFILE"' EXIT
   (umask 077 && printf '%s' "$TS_AUTHKEY" >"$KEYFILE")
   log "joining the tailnet as $P_HOSTNAME (Tailscale SSH: $ssh)"
   tailscale up --auth-key "file:$KEYFILE" --hostname "$P_HOSTNAME" --advertise-tags "$P_TAG" --timeout 120s --accept-risk=lose-ssh "${up_flags[@]}"
   rm -f "$KEYFILE"
+  unset TS_AUTHKEY
 }
 
 report() {
@@ -156,9 +165,10 @@ main() {
   install_base
   setup_locales
   setup_user
-  install_docker
   install_tailscale
+  # Join, and drop the key, before Docker's installer or any later step runs.
   join_tailnet
+  install_docker
   report
 }
 

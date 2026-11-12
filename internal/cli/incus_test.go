@@ -62,7 +62,7 @@ func TestIncusCreateNeedsNoProxmoxToken(t *testing.T) {
 	if !slices.Equal(w.tofuTok, []string{""}) {
 		t.Fatalf("tofu tokens = %q, want one empty", w.tofuTok)
 	}
-	if calls := box.Calls(); len(calls) != 3 || calls[1] != "box Exec api bash -s" || calls[2] != "box Exec api bash -s" {
+	if calls := box.Calls(); len(calls) != 4 || calls[1] != "box Exec api sh -c tailscale ip -4 2>/dev/null || true" || calls[2] != "box Exec api bash -s" || calls[3] != "box Exec api bash -s" {
 		t.Fatalf("incus calls = %v", calls)
 	}
 }

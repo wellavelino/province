@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,7 +73,7 @@ func TestScriptShape(t *testing.T) {
 		t.Fatalf("last line = %q", last)
 	}
 	for _, must := range []string{
-		`: "${TS_AUTHKEY:?}"`,
+		`: "${TS_AUTHKEY?}"`,
 		"getent hosts deb.debian.org",
 		"apt-get install -y -q curl ca-certificates sudo openssh-server",
 		"https://get.docker.com",
@@ -89,11 +90,94 @@ func TestScriptShape(t *testing.T) {
 		}
 	}
 	// The key must never be an argument (visible in ps) or exported.
+	allowed := []string{
+		`: "${TS_AUTHKEY?}"`,
+		`if [ -z "$TS_AUTHKEY" ]; then`,
+		`(umask 077 && printf '%s' "$TS_AUTHKEY" >"$KEYFILE")`,
+		"unset TS_AUTHKEY",
+	}
 	for _, l := range lines {
-		if strings.Contains(l, "TS_AUTHKEY") && !strings.Contains(l, `: "${TS_AUTHKEY:?}"`) && !strings.Contains(l, `printf '%s' "$TS_AUTHKEY" >"$KEYFILE"`) {
-			if !strings.HasPrefix(strings.TrimSpace(l), "#") {
-				t.Errorf("TS_AUTHKEY used outside the check and the key file write: %q", l)
-			}
+		l = strings.TrimSpace(l)
+		if !strings.Contains(l, "TS_AUTHKEY") || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if !slices.ContainsFunc(allowed, func(a string) bool { return strings.HasPrefix(l, a) }) {
+			t.Errorf("TS_AUTHKEY used outside the check, the key file write and the unset: %q", l)
+		}
+	}
+}
+
+// fnBody returns the lines of the script's shell function name.
+func fnBody(t *testing.T, name string) []string {
+	t.Helper()
+	s := string(script)
+	_, rest, ok := strings.Cut(s, "\n"+name+"() {\n")
+	if !ok {
+		t.Fatalf("script has no function %s", name)
+	}
+	body, _, _ := strings.Cut(rest, "\n}\n")
+	var out []string
+	for _, l := range strings.Split(body, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TestScriptJoinsBeforeDockerAndDropsKey pins the order: the node joins
+// the tailnet, and the key is unset, before Docker's installer runs.
+func TestScriptJoinsBeforeDockerAndDropsKey(t *testing.T) {
+	main := fnBody(t, "main")
+	at := func(step string) int {
+		i := slices.Index(main, step)
+		if i < 0 {
+			t.Fatalf("main does not run %s: %q", step, main)
+		}
+		return i
+	}
+	if !(at("install_tailscale") < at("join_tailnet") && at("join_tailnet") < at("install_docker") && at("install_docker") < at("report")) {
+		t.Fatalf("main order = %q", main)
+	}
+	join := fnBody(t, "join_tailnet")
+	up := slices.IndexFunc(join, func(l string) bool { return strings.HasPrefix(l, "tailscale up ") })
+	if up < 0 || up+2 >= len(join) || join[up+1] != `rm -f "$KEYFILE"` || join[up+2] != "unset TS_AUTHKEY" {
+		t.Fatalf("join_tailnet does not drop the key right after tailscale up: %q", join)
+	}
+	// The already-joined path returns early; it must drop the key too.
+	set := slices.IndexFunc(join, func(l string) bool { return strings.HasPrefix(l, "tailscale set ") })
+	if set < 0 || join[set+1] != "unset TS_AUTHKEY" || join[set+2] != "return 0" {
+		t.Fatalf("joined path does not drop the key: %q", join)
+	}
+}
+
+func TestPayloadJoinedSendsNoKey(t *testing.T) {
+	p := params()
+	p.Joined = true
+	a, err := Assignments(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(a), p.AuthKey) || !strings.HasSuffix(string(a), "\nTS_AUTHKEY=''\n") {
+		t.Fatalf("assignments for a joined guest = %q", a)
+	}
+	p.AuthKey = ""
+	if _, err := Payload(p); err != nil {
+		t.Fatalf("joined guest without a key refused: %v", err)
+	}
+}
+
+func TestJoined(t *testing.T) {
+	for out, want := range map[string]bool{
+		"100.64.0.7\n":                           true,
+		" 100.64.0.7 \n100.64.0.8\n":             true,
+		"":                                       false,
+		"fd7a:115c:a1e0::1\n":                    false,
+		"apt noise\nPROVINCE_TS_IP=100.64.0.7\n": false,
+		"no current Tailscale IPs; state: NeedsLogin\n": false,
+	} {
+		if got := Joined(out); got != want {
+			t.Errorf("Joined(%q) = %v, want %v", out, got, want)
 		}
 	}
 }

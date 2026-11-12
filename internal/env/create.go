@@ -301,7 +301,10 @@ func (m *Manager) readKeys() ([]string, error) {
 }
 
 // bootstrap applies what tofu could not set, then runs the bootstrap
-// script in the container. The auth key travels only on the script's stdin.
+// script in the container. The auth key travels only on the script's
+// stdin, and only to a guest that has not joined the tailnet yet: a re-run
+// on a joined guest (one whose bootstrap failed after `tailscale up`)
+// sends none.
 func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, keys []string) (string, error) {
 	b := m.backendFor(h)
 	if err := b.prepare(ctx, md); err != nil {
@@ -311,9 +314,19 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 	if err != nil {
 		return "", err
 	}
+	// No address (no tailscale yet, not logged in) or a failed exec, which
+	// the bootstrap itself will then report, means not joined: send the key.
+	var probe strings.Builder
+	joined := g.Exec(ctx, nil, &probe, bootstrap.ProbeArgv()...) == nil && bootstrap.Joined(probe.String())
+	authKey := m.Secrets.AuthKey
+	if joined {
+		m.logf("%s is already on the tailnet; not sending the auth key again", md.Name)
+		authKey = ""
+	}
 	payload, err := bootstrap.Payload(bootstrap.Params{
 		User: m.Cfg.User, Keys: keys, Hostname: md.Name, Tag: m.Cfg.Tailscale.Tag,
-		Tun: md.Tun, Docker: md.Docker, TSSSH: m.Cfg.Tailscale.SSHEnabled(), Locales: m.Cfg.GuestLocales, AuthKey: m.Secrets.AuthKey,
+		Tun: md.Tun, Docker: md.Docker, TSSSH: m.Cfg.Tailscale.SSHEnabled(), Locales: m.Cfg.GuestLocales,
+		AuthKey: authKey, Joined: joined,
 	})
 	if err != nil {
 		return "", err
