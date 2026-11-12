@@ -29,6 +29,9 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 	if err != nil {
 		return nil, err
 	}
+	if err := md.refuseProtected(); err != nil {
+		return nil, err
+	}
 	if err := md.refuseOutOfSync("destroy"); err != nil {
 		return nil, err
 	}

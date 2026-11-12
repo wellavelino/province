@@ -323,16 +323,24 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 
 | Command | What it does |
 |---|---|
-| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r]` | Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. |
+| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
 | `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, Tailscale, optional Docker. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
 | `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
-| `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). |
-| `env show <name>` | One environment, live status, the ssh line and the public URL if published. |
+| `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). JSON: each env has `expires_at` (RFC3339 UTC, only with a ttl) and `expired`; the text table's `EXPIRES` column marks expired envs `(expired)`. |
+| `env show <name>` | One environment, live status, the ssh line, the public URL if published, and `expires_at` / `expired` / `protected`. |
 | `env expose <name> --port p --yes` | Publishes guest port `p` on the internet through Tailscale Funnel and records `expose_port` and `public_url`. Refuses without `--yes`, when the guest is not running, or when the tailnet does not allow Funnel for the tag. |
 | `env unexpose <name> --yes` | Turns Funnel off in the guest and clears the record. |
-| `env destroy <name> --yes` | `tailscale logout` in the guest, deletes the env's tailnet node by its recorded device ID (with `TS_API_KEY`; see [Tailscale setup](#tailscale-setup)), `tofu destroy`, removes the state dir. |
+| `env destroy <name> --yes` | `tailscale logout` in the guest, deletes the env's tailnet node by its recorded device ID (with `TS_API_KEY`; see [Tailscale setup](#tailscale-setup)), `tofu destroy`, removes the state dir. Refuses (exit 2) a protected env. |
+| `env gc [--yes]` | Destroys every expired env through `env destroy`. Without `--yes` it changes nothing: it refuses (exit 2), naming the envs it would destroy, or exits 0 when there is nothing to destroy (expired protected envs are listed as `skipped`). With `--yes` it goes on past a failure and returns `{"envs":[{"name","host","expires_at","outcome":"destroyed|failed|skipped","error","code","warnings"}],"failed":n}`; exit 1 if any destroy failed. Protected envs are `skipped` (`reason: "protected"`). |
+| `env protect <name> [--off]` | Sets (or with `--off` clears) `protected`; only the env's record changes. Returns `{"name","protected"}`. |
 | `guest move <vmid> --from h1 --to h2 [--to-vmid n] [--storage s] [--start] --yes` | Proxmox hosts only. Moves any container or VM between standalone hosts. See [Moving guests](#moving-guests-proxmox). |
 | `guest prune <vmid> --host h [--force] --yes` | Proxmox hosts only. Deletes the stopped copy a move left behind (`pct destroy <vmid> --purge` / `qm destroy <vmid> --purge`). Refuses (exit 2, nothing changed) unless the guest is stopped, has `onboot=0`, has no `protection=1` or lock, is not a province env (use `env destroy`), and a guest with the same name exists on another configured host (the moved-copy check; `--force` skips only that check). |
+
+### Disposable and protected envs
+
+An env stays until it is destroyed. For one that should not outlive its task, pass `--ttl` to `env create`: the clock starts when `--apply` creates the guest (a plan-only env has nothing to collect), and the expiry is recorded as `expires_at`. Re-running `--apply` with a new `--ttl` (after a failed bootstrap) restarts the clock. Nothing runs in the background: `province env gc --yes` destroys what has expired; run it from cron or an agent. An env that cannot be destroyed (a refused or failed destroy, such as one whose move left it `tofu_out_of_sync`) is reported `failed` and kept.
+
+For one that must not go by mistake, pass `--protect` (or later run `province env protect <name>`): `env destroy`, even with `--yes`, and `env gc` refuse it until `province env protect <name> --off`.
 
 ### Moving guests (Proxmox)
 

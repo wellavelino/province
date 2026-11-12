@@ -30,7 +30,7 @@ Run small, trusted commands (reading files, `git log`, formatting) where you are
 - **Container** (default): starts in seconds. Fine for your own code and trusted dependencies.
 - **VM** (`--kind vm`, when province supports it on the tasks host): its own kernel, boots in 10–30 s. Use it for untrusted code. If `--kind vm` is refused (exit 2), use a container and tell the owner the work ran without a VM boundary.
 
-When province supports them, also pass `--ttl 2h` (so `env gc` removes a forgotten env) and rely on `isolated: true` in the tasks host config (no LAN access). Check with `province env create --help`; do not invent flags.
+Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so `province env gc --yes` removes an env a crashed session forgot. Never pass `--protect` to a task env. When province supports it, rely on `isolated: true` in the tasks host config (no LAN access). Check with `province env create --help`; do not invent flags.
 
 ## The loop
 
@@ -38,8 +38,8 @@ When province supports them, also pass `--ttl 2h` (so `env gc` removes a forgott
 name=task-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
 echo "$name" >> ~/.province-tasks
 
-province env create "$name" --host tasks --recipe <recipe> --json          # plan: check it
-province env create "$name" --host tasks --recipe <recipe> --apply --json  # create
+province env create "$name" --host tasks --recipe <recipe> --ttl 2h --json          # plan: check it
+province env create "$name" --host tasks --recipe <recipe> --ttl 2h --apply --json  # create
 province env show "$name" --json                                           # read the "ssh" field
 ```
 

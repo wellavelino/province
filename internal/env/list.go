@@ -20,12 +20,13 @@ const (
 type View struct {
 	Metadata
 	LiveStatus string `json:"live_status"`
+	Expired    bool   `json:"expired"`
 	Error      string `json:"error,omitempty"`
 	SSH        string `json:"ssh,omitempty"`
 }
 
 func (m *Manager) view(md *Metadata) View {
-	v := View{Metadata: *md}
+	v := View{Metadata: *md, Expired: md.expired(m.Now())}
 	if md.Status == StatusBootstrapped {
 		v.SSH = "ssh " + m.Cfg.User + "@" + md.Name
 	}

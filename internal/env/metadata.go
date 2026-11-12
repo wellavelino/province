@@ -64,10 +64,16 @@ type Metadata struct {
 	Recipe string `json:"recipe,omitempty"`
 	// TofuOutOfSync: a move re-homed the guest but the tofu state could not
 	// be pointed at it; TofuFix are the steps that finish it by hand.
-	TofuOutOfSync bool      `json:"tofu_out_of_sync,omitempty"`
-	TofuFix       []string  `json:"tofu_fix,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	TofuOutOfSync bool     `json:"tofu_out_of_sync,omitempty"`
+	TofuFix       []string `json:"tofu_fix,omitempty"`
+	// TTL (a Go duration) is how long the env lives once its guest is
+	// created; ExpiresAt is then when `env gc --yes` may destroy it.
+	TTL       string    `json:"ttl,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Protected: env destroy and env gc refuse until `env protect --off`.
+	Protected bool      `json:"protected,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Tailnet finds and removes devices in the tailnet (Tailscale API). Only

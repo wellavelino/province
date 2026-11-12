@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,7 +16,7 @@ import (
 
 func (a *app) envCmd() *cobra.Command {
 	c := &cobra.Command{Use: "env", Short: "Manage environments (LXC containers on Proxmox or Incus)"}
-	c.AddCommand(a.envCreateCmd(), a.envListCmd(), a.envShowCmd(), a.envDestroyCmd(), a.envExposeCmd(), a.envUnexposeCmd(), a.envProvisionCmd())
+	c.AddCommand(a.envCreateCmd(), a.envListCmd(), a.envShowCmd(), a.envDestroyCmd(), a.envExposeCmd(), a.envUnexposeCmd(), a.envProvisionCmd(), a.envProtectCmd(), a.envGCCmd())
 	return c
 }
 
@@ -58,7 +60,7 @@ func printRecipe(w io.Writer, r *env.Recipe) {
 }
 
 func (a *app) envCreateCmd() *cobra.Command {
-	var kind string
+	var kind, ttl string
 	var o env.CreateOpts
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -71,6 +73,13 @@ func (a *app) envCreateCmd() *cobra.Command {
 				return errs.Refusedf("--kind vm is not supported in v1; use --kind lxc")
 			default:
 				return errs.Refusedf("--kind must be lxc or vm, got %q", kind)
+			}
+			if cmd.Flags().Changed("ttl") {
+				d, err := parseTTL(ttl)
+				if err != nil {
+					return err
+				}
+				o.TTL = d
 			}
 			m, err := a.manager()
 			if err != nil {
@@ -115,7 +124,36 @@ func (a *app) envCreateCmd() *cobra.Command {
 	fl.IntVar(&o.Expose, "expose", 0, "publish this guest port on the public internet through Tailscale Funnel (https://<name>.<tailnet>.ts.net/)")
 	fl.StringVar(&o.Recipe, "recipe", "", "recipe from the site config to apply after bootstrap (default: the recorded one, then defaults.recipe; none for none)")
 	fl.BoolVar(&o.Apply, "apply", false, "apply the plan and bootstrap the guest")
+	fl.StringVar(&ttl, "ttl", "", "time to live from --apply, e.g. 2h, 24h or 7d; `env gc --yes` destroys the env once it has expired")
+	fl.BoolVar(&o.Protect, "protect", false, "protect the env: env destroy and env gc refuse it until `env protect --off`")
 	return cmd
+}
+
+// parseTTL reads --ttl: a Go duration (90m, 24h) or a whole number of
+// days (7d); it must be positive.
+func parseTTL(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if n, found := strings.CutSuffix(s, "d"); err != nil && found {
+		if days, aerr := strconv.Atoi(n); aerr == nil && days > 0 && days <= 100000 {
+			d, err = time.Duration(days)*24*time.Hour, nil
+		}
+	}
+	if err != nil || d <= 0 {
+		return 0, errs.Refusedf("--ttl must be a positive duration such as 30m, 24h or 7d, got %q", s)
+	}
+	return d, nil
+}
+
+// expiry renders an env's expiry for humans: "-", the time, or the time
+// marked expired.
+func expiry(v env.View) string {
+	switch {
+	case v.ExpiresAt.IsZero():
+		return "-"
+	case v.Expired:
+		return v.ExpiresAt.Format(time.RFC3339) + " (expired)"
+	}
+	return v.ExpiresAt.Format(time.RFC3339)
 }
 
 type listResult struct {
@@ -138,9 +176,9 @@ func (a *app) envListCmd() *cobra.Command {
 			}
 			return a.emit(listResult{Envs: views}, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(tw, "NAME\tHOST\tGUEST\tSTATUS\tLIVE\tRECIPE\tTAILNET IP\tPUBLIC URL")
+				fmt.Fprintln(tw, "NAME\tHOST\tGUEST\tSTATUS\tLIVE\tRECIPE\tTAILNET IP\tPUBLIC URL\tEXPIRES")
 				for _, v := range views {
-					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Host, guestLabel(v.VMID, v.Instance), v.Status, v.LiveStatus, v.Recipe, v.TailscaleIP, v.PublicURL)
+					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Host, guestLabel(v.VMID, v.Instance), v.Status, v.LiveStatus, v.Recipe, v.TailscaleIP, v.PublicURL, expiry(v))
 				}
 				tw.Flush()
 				for _, v := range views {
@@ -187,6 +225,14 @@ func (a *app) envShowCmd() *cobra.Command {
 					fmt.Fprintf(w, "public URL:   %s -> port %d (Tailscale Funnel)\n", v.PublicURL, v.ExposePort)
 				case v.ExposePort != 0:
 					fmt.Fprintf(w, "public URL:   none yet (port %d is published once the env is bootstrapped)\n", v.ExposePort)
+				}
+				if !v.ExpiresAt.IsZero() {
+					fmt.Fprintf(w, "expires:      %s\n", expiry(*v))
+				} else if v.TTL != "" {
+					fmt.Fprintf(w, "ttl:          %s (counted from --apply)\n", v.TTL)
+				}
+				if v.Protected {
+					fmt.Fprintf(w, "protected:    yes (env destroy and env gc refuse it)\n")
 				}
 				if v.Error != "" {
 					fmt.Fprintf(w, "error:        %s\n", v.Error)
@@ -307,5 +353,77 @@ func (a *app) envProvisionCmd() *cobra.Command {
 		}),
 	}
 	cmd.Flags().StringVar(&recipe, "recipe", "", "recipe from the site config (default: the env's recorded recipe, then defaults.recipe)")
+	return cmd
+}
+
+func (a *app) envProtectCmd() *cobra.Command {
+	var off bool
+	cmd := &cobra.Command{
+		Use:   "protect <name> [--off]",
+		Short: "Protect an environment from env destroy and env gc, or with --off remove the protection",
+		Args:  exactArgs(1, "name"),
+		RunE: a.action(func(cmd *cobra.Command, args []string) error {
+			m, err := a.manager()
+			if err != nil {
+				return err
+			}
+			res, err := m.Protect(args[0], !off)
+			if err != nil {
+				return err
+			}
+			return a.emit(res, func(w io.Writer) {
+				if res.Protected {
+					fmt.Fprintf(w, "%s is protected: env destroy and env gc refuse it\n", res.Name)
+				} else {
+					fmt.Fprintf(w, "%s is no longer protected\n", res.Name)
+				}
+			})
+		}),
+	}
+	cmd.Flags().BoolVar(&off, "off", false, "remove the protection")
+	return cmd
+}
+
+func (a *app) envGCCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "gc --yes",
+		Short: "Destroy every expired environment (--ttl) that is not protected",
+		Args:  exactArgs(0),
+		RunE: a.action(func(cmd *cobra.Command, _ []string) error {
+			m, err := a.manager()
+			if err != nil {
+				return err
+			}
+			res, gcErr := m.GC(cmd.Context(), yes)
+			if res == nil {
+				return gcErr
+			}
+			err = a.emit(res, func(w io.Writer) {
+				if len(res.Envs) == 0 {
+					fmt.Fprintln(w, "No expired environments.")
+				}
+				for _, e := range res.Envs {
+					switch e.Outcome {
+					case env.GCDestroyed:
+						fmt.Fprintf(w, "Destroyed %s (%s on %s), expired %s\n", e.Name, guestRef(e.VMID, e.Instance), e.Host, e.ExpiresAt.Format(time.RFC3339))
+						for _, s := range e.Warnings {
+							fmt.Fprintf(w, "warning: %s: %s\n", e.Name, s)
+						}
+					case env.GCSkipped:
+						fmt.Fprintf(w, "Skipped %s (%s), expired %s\n", e.Name, e.Reason, e.ExpiresAt.Format(time.RFC3339))
+					case env.GCFailed:
+						fmt.Fprintf(w, "FAILED %s: %s\n", e.Name, e.Error)
+					}
+				}
+			})
+			if err != nil || gcErr == nil {
+				return err
+			}
+			// The per-env results are printed; only the exit code is left.
+			return reported{gcErr}
+		}),
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm destroying the expired environments")
 	return cmd
 }

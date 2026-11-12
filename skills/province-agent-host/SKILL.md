@@ -69,11 +69,11 @@ incus delete smoke --force --project tasks
 Created from the owner's laptop with province, in the default project (not `tasks`), so task limits never squeeze it:
 
 ```
-province env create agent-host --host <incus-host> --recipe <agent-recipe> --json
-province env create agent-host --host <incus-host> --recipe <agent-recipe> --apply --json
+province env create agent-host --host <incus-host> --recipe <agent-recipe> --protect --json
+province env create agent-host --host <incus-host> --recipe <agent-recipe> --protect --apply --json
 ```
 
-The recipe should install `tmux`, `git`, `incus` (the client), `tofu`, `province` and Claude Code. Use `--protect` when province supports it, so the env cannot be destroyed by mistake.
+The recipe should install `tmux`, `git`, `incus` (the client), `tofu`, `province` and Claude Code. `--protect` makes `env destroy` and `env gc` refuse it, so it cannot be destroyed by mistake; only the owner removes it, with `province env protect agent-host --off`. Never give it a `--ttl`.
 
 ## 4. Give the agent-host access to the tasks project only
 

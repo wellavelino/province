@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wellavelino/province/internal/bootstrap"
 	"github.com/wellavelino/province/internal/config"
@@ -29,6 +30,10 @@ type CreateOpts struct {
 	// defaults.recipe; "none" applies none.
 	Recipe string
 	Apply  bool
+	// TTL > 0 records a time to live, counted from --apply (see startTTL);
+	// Protect marks the env protected. Neither clears what is recorded.
+	TTL     time.Duration
+	Protect bool
 }
 
 // CreateResult is the outcome of env create.
@@ -69,6 +74,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	}
 	if o.CPU < 0 || o.RAM < 0 || o.Disk < 0 {
 		return nil, errs.Refusedf("--cpu, --ram and --disk must be positive")
+	}
+	if o.TTL < 0 {
+		return nil, errs.Refusedf("--ttl must be positive")
 	}
 	if o.Expose != 0 {
 		if err := validPort(o.Expose); err != nil {
@@ -121,6 +129,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	md.Docker = o.Docker || md.Docker
 	md.ExposePort = pick(o.Expose, md.ExposePort)
 	md.Tun = m.Cfg.Tailscale.Tun
+	md.lifetime(o, m.Now())
 
 	b := m.backendFor(host)
 	if err := b.check(); err != nil {

@@ -70,8 +70,8 @@ Today every env can reach the LAN it sits on, including the hosts themselves. An
 
 Long-lived is already the default: an env stays until it is destroyed and starts with its host.
 
-- [ ] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
-- [ ] `--protect`: `env destroy` refuses until the flag is removed.
+- [x] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
+- [x] `--protect`: `env destroy` refuses until the flag is removed.
 
 Backups of long-lived envs stay with the platform (Proxmox backup jobs, `incus export`).
 
