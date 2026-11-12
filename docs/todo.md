@@ -50,7 +50,7 @@ Hardening:
 
 - [ ] Bootstrap: join the tailnet before installing Docker, then `unset TS_AUTHKEY`; don't resend the key once the node has joined.
 - [x] `.gitignore`: `province.yaml`, `*.tfstate*`, `.terraform/`, `.env*`, before going public.
-- [ ] Add `govulncheck` to verify and CI.
+- [x] Add `govulncheck` to verify and CI.
 
 Not examined yet (second audit run): restoring a move archive from a guest that ran untrusted code; hosts with `insecure: true` while a guest shares their LAN.
 

@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   verify:
-    name: verify (gofmt, vet, build, race tests, shellcheck)
+    name: verify (gofmt, vet, build, race tests, shellcheck, staticcheck, govulncheck)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -19,6 +19,17 @@ jobs:
         with:
           go-version-file: go.mod
       - run: sudo apt-get install -y -q shellcheck
+      # Pinned module versions; verify.sh skips these when they are not on PATH.
+      # GOTOOLCHAIN=local builds them with the go.mod toolchain from setup-go:
+      # otherwise go install switches to the older toolchain their own go.mod
+      # names, and staticcheck then cannot load the newer standard library.
+      - name: Install staticcheck and govulncheck
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: bash .claude/verify.sh
 
   tofu-validate:
