@@ -68,6 +68,9 @@ type Metadata struct {
 	PublicURL  string `json:"public_url,omitempty"`
 	// Recipe is the recipe last chosen for the env ("none" for none).
 	Recipe string `json:"recipe,omitempty"`
+	// Isolated: the env cannot reach the LAN (its host had isolated: true
+	// when the env's tofu config was last written).
+	Isolated bool `json:"isolated,omitempty"`
 	// TofuOutOfSync: a move re-homed the guest but the tofu state could not
 	// be pointed at it; TofuFix are the steps that finish it by hand.
 	TofuOutOfSync bool     `json:"tofu_out_of_sync,omitempty"`

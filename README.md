@@ -257,7 +257,7 @@ export PROVINCE_TOKEN_PVE2='province@pve!cli=…'   # from pve2
 
 **Proxmox host fields:** `name` (what you pass to `--host`), `node` (the Proxmox node name), `endpoint` (the API URL, https), `ssh` (destination for the [shell access](#shell-access-to-the-host)), `sudo` (true when `ssh` is not root), `insecure` (skip TLS verification for this host only), `dump_dir` (where `guest move` puts the dump on the target, default `/var/lib/vz/dump`), `token_env` (the variable holding this host's token, default `PROXMOX_VE_API_TOKEN`). tofu gets the token as `PROXMOX_VE_API_TOKEN` in its environment, never as an argument.
 
-**Incus host fields:** `backend: incus`, `remote` (required), `project`, `storage_pool`, `network`, `image`. See [Incus hosts](docs/incus.md).
+**Incus host fields:** `backend: incus`, `remote` (required), `project`, `storage_pool`, `network`, `image`, `isolated` (envs reach the internet and the tailnet but not the LAN; needs `network`). See [Incus hosts](docs/incus.md#isolated-envs).
 
 A host without `backend` is a Proxmox host. The three Proxmox defaults (`storage`, `bridge`, `template`) are required only when the config has a Proxmox host.
 
@@ -315,7 +315,7 @@ A published app is reachable by anyone, so assume it can be compromised and keep
 }
 ```
 
-No grant has `tag:dev` as its `src`, so a guest cannot open connections to your devices or your hosts over the tailnet (replies to your own connections still flow). If envs must talk to each other, add only `{ "src": ["tag:dev"], "dst": ["tag:dev"], "ip": ["*"] }`. This covers the tailnet only: the guest also sits on the LAN through its bridge or network and can reach your hosts' LAN addresses there. Isolating that needs a separate VLAN or firewall, which province does not set up.
+No grant has `tag:dev` as its `src`, so a guest cannot open connections to your devices or your hosts over the tailnet (replies to your own connections still flow). If envs must talk to each other, add only `{ "src": ["tag:dev"], "dst": ["tag:dev"], "ip": ["*"] }`. This covers the tailnet only: the guest also sits on the LAN through its bridge or network and can reach your hosts' LAN addresses there. On an Incus host, `isolated: true` stops that: the host drops the env's traffic to private and link-local addresses, the host's own included, and the env's sudo user cannot undo it (see [Isolated envs](docs/incus.md#isolated-envs)). On Proxmox hosts province does not set this up yet; use a separate VLAN or firewall.
 
 ## Commands
 
@@ -323,7 +323,7 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 
 | Command | What it does |
 |---|---|
-| `env create <name> [--host h] [--kind lxc\|vm] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | `--kind vm` (Incus hosts only; refused on Proxmox) makes the env a virtual machine instead of a container. Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
+| `env create <name> [--host h] [--kind lxc\|vm] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | `--kind vm` (Incus hosts only; refused on Proxmox) makes the env a virtual machine instead of a container. Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool, and on an `isolated` host that it can enforce the network ACL), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
 | `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, Tailscale, optional Docker. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
 | `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
 | `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). JSON: each env has `expires_at` (RFC3339 UTC, only with a ttl) and `expired`; the text table's `EXPIRES` column marks expired envs `(expired)`. |

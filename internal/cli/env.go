@@ -214,7 +214,10 @@ func (a *app) envShowCmd() *cobra.Command {
 				if v.Recipe != "" {
 					fmt.Fprintf(w, "recipe:       %s\n", v.Recipe)
 				}
-				fmt.Fprintf(w, "size:         %d cores, %d MiB, %d GiB\ndocker:       %v\ntailnet IP:   %s\n", v.CPU, v.RAM, v.Disk, v.Docker, v.TailscaleIP)
+				if v.Isolated {
+					fmt.Fprintln(w, "isolated:     yes (no LAN access)")
+				}
+				fmt.Fprintf(w, "size:        %d cores, %d MiB, %d GiB\ndocker:       %v\ntailnet IP:   %s\n", v.CPU, v.RAM, v.Disk, v.Docker, v.TailscaleIP)
 				if v.SSH != "" {
 					fmt.Fprintf(w, "ssh:          %s\n", v.SSH)
 				}

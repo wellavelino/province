@@ -62,8 +62,8 @@ Not examined yet (second audit run): restoring a move archive from a guest that 
 
 Today every env can reach the LAN it sits on, including the hosts themselves. An isolated env can reach the internet and the tailnet but not the LAN, enforced on the host so the env's own sudo user cannot undo it.
 
-- [ ] Proxmox: the guest firewall, declared in the tofu config.
-- [ ] Incus: a network ACL, declared in the tofu config.
+- [ ] Proxmox: the guest firewall, declared in the tofu config. Deferred (owner decision, 2026-11-13): envs use DHCP, so province does not know the gateway or DNS server to keep allowed; `isolated: true` on a Proxmox host is refused when the site config loads.
+- [x] Incus: a network ACL, declared in the tofu config (`isolated: true` on the host, see [docs/incus.md](incus.md#isolated-envs)).
 - [ ] Later, if needed: an allowlist of outbound hosts instead of "everything but the LAN".
 
 ## 4. Disposable and long-lived, as two flags

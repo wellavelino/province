@@ -102,7 +102,7 @@ func (m *Manager) Rehome(ctx context.Context, name string, to config.Host, vmid 
 	if err != nil {
 		return fail(false, err)
 	}
-	if err := m.writeMainTF(dir, md, to, vmid, keys); err != nil {
+	if err := m.writeMainTF(dir, md, to, planned{VMID: vmid}, keys); err != nil {
 		return fail(false, err)
 	}
 	tf, err := m.Tofu(to)

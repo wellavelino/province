@@ -138,6 +138,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	md.ExposePort = pick(o.Expose, md.ExposePort)
 	md.Tun = m.Cfg.Tailscale.Tun
 	md.lifetime(o, m.Now())
+	md.Isolated = host.Isolated
 
 	b := m.backendFor(host)
 	if err := b.check(); err != nil {
@@ -168,7 +169,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := mkdirAll(dir); err != nil {
 		return nil, err
 	}
-	if err := m.writeMainTF(dir, md, host, p.VMID, keys); err != nil {
+	if err := m.writeMainTF(dir, md, host, p, keys); err != nil {
 		return nil, err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, ".gitignore"), []byte(".terraform/\n")); err != nil {
@@ -434,9 +435,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// writeMainTF renders the env's tofu config for host and, on Proxmox, vmid.
-func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, vmid int, keys []string) error {
-	mainTF, err := m.backendFor(host).mainTF(md, keys, planned{VMID: vmid})
+// writeMainTF renders the env's tofu config for host from what plan decided.
+func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, p planned, keys []string) error {
+	mainTF, err := m.backendFor(host).mainTF(md, keys, p)
 	if err != nil {
 		return err
 	}

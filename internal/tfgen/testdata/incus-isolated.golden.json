@@ -1,0 +1,98 @@
+{
+  "terraform": {
+    "required_providers": {
+      "incus": {
+        "source": "lxc/incus",
+        "version": "1.2.1"
+      }
+    }
+  },
+  "provider": {
+    "incus": {}
+  },
+  "resource": {
+    "incus_instance": {
+      "env": {
+        "name": "demo",
+        "description": "Managed by province (env demo)",
+        "remote": "box",
+        "image": "images:debian/13",
+        "type": "container",
+        "running": true,
+        "config": {
+          "boot.autostart": "true",
+          "limits.cpu": "2",
+          "limits.memory": "2048MiB",
+          "user.province.env": "demo"
+        },
+        "device": [
+          {
+            "name": "root",
+            "type": "disk",
+            "properties": {
+              "path": "/",
+              "pool": "default",
+              "size": "16GiB"
+            }
+          },
+          {
+            "name": "eth0",
+            "type": "nic",
+            "properties": {
+              "name": "eth0",
+              "network": "incusbr0",
+              "security.acls": "province-demo",
+              "security.acls.default.egress.action": "drop",
+              "security.acls.default.ingress.action": "allow"
+            }
+          }
+        ],
+        "depends_on": [
+          "incus_network_acl.isolated"
+        ]
+      }
+    },
+    "incus_network_acl": {
+      "isolated": {
+        "name": "province-demo",
+        "description": "Managed by province: env demo reaches the internet and the tailnet, not the LAN",
+        "remote": "box",
+        "egress": [
+          {
+            "description": "internet: everything outside the LAN ranges",
+            "action": "allow",
+            "state": "enabled",
+            "destination": "0.0.0.0-9.255.255.255,11.0.0.0-169.253.255.255,169.255.0.0-172.15.255.255,172.32.0.0-192.167.255.255,192.169.0.0-255.255.255.255,::-fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff,fe00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+          },
+          {
+            "description": "tailnet",
+            "action": "allow",
+            "state": "enabled",
+            "destination": "100.64.0.0/10,fd7a:115c:a1e0::/48"
+          },
+          {
+            "description": "DNS and DHCP to the network's gateway",
+            "action": "allow",
+            "state": "enabled",
+            "protocol": "udp",
+            "destination": "10.148.12.1,fd42:4c6f:2f3a:1b2c::1",
+            "destination_port": "53,67,547"
+          },
+          {
+            "description": "DNS over TCP to the network's gateway",
+            "action": "allow",
+            "state": "enabled",
+            "protocol": "tcp",
+            "destination": "10.148.12.1,fd42:4c6f:2f3a:1b2c::1",
+            "destination_port": "53"
+          }
+        ]
+      }
+    }
+  },
+  "output": {
+    "name": {
+      "value": "${incus_instance.env.name}"
+    }
+  }
+}

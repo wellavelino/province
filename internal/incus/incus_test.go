@@ -78,3 +78,21 @@ func TestQueryBadJSON(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestServerAndNetwork(t *testing.T) {
+	f := &runtest.Fake{T: t}
+	f.On([]string{"incus", "query", "box:/1.0?project=dev&recursion=1"},
+		runtest.Response{Stdout: `{"api_extensions":["network_acl","network_bridge_acl_devices"],"environment":{"firewall":"nftables"}}`})
+	f.On([]string{"incus", "query", "box:/1.0/networks/incusbr0?project=dev&recursion=1"},
+		runtest.Response{Stdout: `{"name":"incusbr0","type":"bridge","managed":true,"config":{"ipv4.address":"10.148.12.1/24","ipv6.address":"none"}}`})
+	c := &CLI{Runner: f, Remote: "box", Project: "dev"}
+	ctx := context.Background()
+	s, err := c.Server(ctx)
+	if err != nil || s.Firewall != "nftables" || !slices.Contains(s.Extensions, ExtBridgeACLDevices) {
+		t.Fatalf("server = %+v, %v", s, err)
+	}
+	n, err := c.Network(ctx, "incusbr0")
+	if err != nil || n.Type != "bridge" || !n.Managed || n.Config["ipv4.address"] != "10.148.12.1/24" {
+		t.Fatalf("network = %+v, %v", n, err)
+	}
+}
