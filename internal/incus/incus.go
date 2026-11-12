@@ -57,7 +57,7 @@ func (c *CLI) cmd(stdin io.Reader, stdout io.Writer, args ...string) run.Cmd {
 // Exec implements Client. -T: stdin is a script, not a terminal.
 func (c *CLI) Exec(ctx context.Context, name string, stdin io.Reader, stdout io.Writer, argv ...string) error {
 	args := append([]string{"exec", c.Remote + ":" + name, "-T", "--"}, argv...)
-	if err := c.Runner.Run(ctx, c.cmd(stdin, stdout, args...)); err != nil {
+	if err := run.MarkGuest(c.Runner.Run(ctx, c.cmd(stdin, stdout, args...))); err != nil {
 		return fmt.Errorf("incus exec in %s on remote %s: %w", name, c.Remote, err)
 	}
 	return nil

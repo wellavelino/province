@@ -82,7 +82,7 @@ func (h *SSHHost) guest(ctx context.Context, typ, verb string, vmid int, extra .
 func (h *SSHHost) Exec(ctx context.Context, vmid int, stdin io.Reader, stdout io.Writer, argv ...string) error {
 	c := h.cmd(append([]string{"pct", "exec", strconv.Itoa(vmid), "--"}, argv...)...)
 	c.Stdin, c.Stdout = stdin, stdout
-	if err := h.Runner.Run(ctx, c); err != nil {
+	if err := run.MarkGuest(h.Runner.Run(ctx, c)); err != nil {
 		return fmt.Errorf("pct exec %d on %s: %w", vmid, h.Target.Dest, err)
 	}
 	return nil

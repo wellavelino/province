@@ -52,6 +52,9 @@ func TestExposeAcceptsOnlyTheEnvsOwnTSNetName(t *testing.T) {
 			if strings.ContainsAny(err.Error(), "\x1b\n") {
 				t.Fatalf("error carries the guest's control characters: %q", err)
 			}
+			if g := errs.GuestOutput(err); g == "" || strings.Contains(err.Error(), g) {
+				t.Fatalf("reported name not kept apart: err=%q guest output=%q", err, g)
+			}
 		})
 	}
 }

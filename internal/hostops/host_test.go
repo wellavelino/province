@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/run/runtest"
 	"github.com/wellavelino/province/internal/sshx"
 )
@@ -30,6 +31,25 @@ func TestExecSendsStdinToBashInGuest(t *testing.T) {
 	c := f.Calls()[0]
 	if c.Stdin != "payload" || out.String() != "PROVINCE_TS_IP=100.64.0.1\n" {
 		t.Fatalf("stdin=%q out=%q", c.Stdin, out.String())
+	}
+}
+
+// The guest's stderr is kept out of the message and returned as guest
+// output; a host command's stderr stays in its message.
+func TestExecFailureKeepsGuestStderrApart(t *testing.T) {
+	h, f := newHost(t, false)
+	f.On(remote("pct", "exec", "105", "--", "bash", "-s"), runtest.Response{Code: 3, Stderr: "recipe step failed\n"})
+	f.On(remote("pct", "start", "105"), runtest.Response{Code: 1, Stderr: "CT 105 already running"})
+	err := h.Exec(context.Background(), 105, strings.NewReader("x"), nil, "bash", "-s")
+	if err == nil || !strings.Contains(err.Error(), "pct exec 105 on pve1") || strings.Contains(err.Error(), "recipe step failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := errs.GuestOutput(err); got != "recipe step failed" {
+		t.Fatalf("guest output = %q", got)
+	}
+	err = h.Start(context.Background(), "lxc", 105)
+	if err == nil || !strings.Contains(err.Error(), "already running") || errs.GuestOutput(err) != "" {
+		t.Fatalf("host command: err = %v, guest output = %q", err, errs.GuestOutput(err))
 	}
 }
 

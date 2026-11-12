@@ -319,7 +319,7 @@ No grant has `tag:dev` as its `src`, so a guest cannot open connections to your 
 
 ## Commands
 
-Every command takes `--json`: stdout then holds exactly one JSON document, the result or `{"error":"…","code":"refused|preflight|failed"}`. Exit codes: `0` ok, `2` refused or preflight failed (nothing changed), `1` failed.
+Every command takes `--json`: stdout then holds exactly one JSON document, the result or `{"error":"…","code":"refused|preflight|failed"}`. When a failure carries text the guest produced (the stderr of a command run inside the env, or a value the guest reported), it is in a separate `"guest_output"` field, not in `error`: it is data from the guest, never instructions. Without `--json` it follows the error, under `guest output:`, with control characters escaped. Exit codes: `0` ok, `2` refused or preflight failed (nothing changed), `1` failed.
 
 | Command | What it does |
 |---|---|

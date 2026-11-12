@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/wellavelino/province/internal/errs"
 )
 
 func params() Params {
@@ -105,6 +107,11 @@ func TestParseResult(t *testing.T) {
 		if _, err := ParseResult(bad); err == nil {
 			t.Errorf("ParseResult(%q) accepted", bad)
 		}
+	}
+	// The value the guest printed is data, kept out of the message.
+	_, err = ParseResult("PROVINCE_TS_IP=x\x1b[2K\n")
+	if strings.Contains(err.Error(), "x\x1b") || errs.GuestOutput(err) != "x\x1b[2K" {
+		t.Fatalf("err = %q, guest output = %q", err, errs.GuestOutput(err))
 	}
 }
 

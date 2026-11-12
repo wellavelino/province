@@ -2,9 +2,10 @@ package bootstrap
 
 import (
 	"errors"
-	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/wellavelino/province/internal/errs"
 )
 
 const resultPrefix = "PROVINCE_TS_IP="
@@ -20,7 +21,7 @@ func ParseResult(stdout string) (string, error) {
 		}
 		addr, err := netip.ParseAddr(v)
 		if err != nil || !addr.Is4() {
-			return "", fmt.Errorf("bootstrap reported a bad tailscale address %q", v)
+			return "", errs.WithGuestOutput(errors.New("bootstrap reported a bad tailscale address (in the guest output)"), v)
 		}
 		return addr.String(), nil
 	}

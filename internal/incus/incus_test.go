@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/run/runtest"
 )
 
@@ -28,8 +29,12 @@ func TestExecFailureNamesInstanceAndRemote(t *testing.T) {
 	f := &runtest.Fake{T: t}
 	f.On([]string{"incus"}, runtest.Response{Code: 1, Stderr: "Error: Instance not running"})
 	err := (&CLI{Runner: f, Remote: "box"}).Exec(context.Background(), "api", nil, nil, "true")
-	if err == nil || !strings.Contains(err.Error(), "api on remote box") || !strings.Contains(err.Error(), "not running") {
+	if err == nil || !strings.Contains(err.Error(), "api on remote box") || strings.Contains(err.Error(), "not running") {
 		t.Fatalf("err = %v", err)
+	}
+	// The guest's stderr is data, apart from province's message.
+	if got := errs.GuestOutput(err); got != "Error: Instance not running" {
+		t.Fatalf("guest output = %q", got)
 	}
 	if got := f.Calls()[0].Argv; slices.Contains(got, "--project") {
 		t.Errorf("no project configured, argv = %q", got)
