@@ -18,10 +18,16 @@ import (
 // EnvKey is the instance config key province sets to the env's name.
 const EnvKey = "user.province.env"
 
+// Instance types as the server reports them.
+const (
+	TypeContainer = "container"
+	TypeVM        = "virtual-machine"
+)
+
 // Instance is one instance as the server reports it.
 type Instance struct {
 	Name   string
-	Type   string // container | virtual-machine
+	Type   string // TypeContainer | TypeVM
 	Status string // lowercase: running, stopped, frozen, error, ...
 	Env    string // config user.province.env: the env that created it, if any
 }

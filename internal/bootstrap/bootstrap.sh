@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# province bootstrap. Runs as root inside a new container through
-# `pct exec <vmid> -- bash -s`; province prepends shell-quoted P_* and
+# province bootstrap. Runs as root inside a new guest (container or VM) through
+# `pct exec <vmid> -- bash -s` or `incus exec`; province prepends shell-quoted P_* and
 # TS_AUTHKEY assignments on stdin. Safe to re-run. TS_AUTHKEY is empty when
 # province found the guest already on the tailnet: a joined node never gets
 # the key again. The key is unset right after `tailscale up`, before Docker

@@ -16,7 +16,9 @@ func incusBase() Incus {
 func TestIncusGolden(t *testing.T) {
 	full := incusBase()
 	full.Project, full.Network, full.Docker, full.TunDevice = "dev", "incusbr0", true, true
-	for name, i := range map[string]Incus{"incus-default": incusBase(), "incus-full": full} {
+	vm := full
+	vm.VM = true
+	for name, i := range map[string]Incus{"incus-default": incusBase(), "incus-full": full, "incus-vm": vm} {
 		got, err := GenerateIncus(i)
 		if err != nil {
 			t.Fatal(err)
@@ -34,6 +36,33 @@ func TestIncusGolden(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: output differs from %s (run go test ./internal/tfgen -update after checking)\n%s", name, path, got)
 		}
+	}
+}
+
+// TestIncusVM: a VM is a virtual-machine instance without the container
+// keys Docker and tailscale.tun: device would add.
+func TestIncusVM(t *testing.T) {
+	i := incusBase()
+	i.VM, i.Docker, i.TunDevice = true, true, true
+	b, err := GenerateIncus(i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f incusFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	in := f.Resource["incus_instance"]["env"]
+	if in.Type != "virtual-machine" {
+		t.Errorf("type = %q", in.Type)
+	}
+	for k := range in.Config {
+		if strings.HasPrefix(string(k), "security.") {
+			t.Errorf("VM config has %s", k)
+		}
+	}
+	if len(in.Device) != 1 || in.Device[0].Name != "root" || in.Device[0].Properties["size"] != "16GiB" {
+		t.Errorf("devices = %+v", in.Device)
 	}
 }
 

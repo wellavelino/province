@@ -31,7 +31,7 @@ description: Create, list, show, provision, destroy and move dev environments on
 ## Commands
 
 ```
-province env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect] [--apply] --json
+province env create <name> [--host h] [--kind lxc|vm] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect] [--apply] --json
 province env provision <name> [--recipe r] --json
 province env list --json
 province env show <name> --json
@@ -44,7 +44,7 @@ province guest move <vmid> --from <host> --to <host> [--to-vmid n] [--storage s]
 province guest prune <vmid> --host <host> [--force] --yes --json
 ```
 
-- `--kind vm` is refused in v1 (exit 2). `guest move` and `guest prune` are refused for Incus hosts (exit 2).
+- `--kind vm` makes a VM instead of a container, on Incus hosts only; on a Proxmox host it is refused (exit 2), and with `tailscale.tun: device` it fails preflight (exit 2). A re-run keeps the recorded kind; a different `--kind` is refused. `guest move` and `guest prune` are refused for Incus hosts (exit 2).
 - Recipes: `--recipe` picks one from the site config (`none` for none); without it the env's recorded recipe, then `defaults.recipe`, applies. `env provision` re-applies it to a running env; every step is safe to repeat. A guest on Incus has `instance` instead of `vmid` in results.
 - `env show` returns `ssh` (for example `ssh dev@demo`): use that line to reach the environment over the tailnet. Guests run Tailscale SSH by default (`tailscale.ssh: true`), so the tailnet policy decides who may log in; if a `check` rule asks for a browser re-authentication, stop and ask the owner to complete it. Plain SSH with the configured keys works on the LAN as a fallback.
 - `public_url` in `env show` / `env list` is the env's public address when it is published (Tailscale Funnel). A `preflight` refusal from `env expose` that mentions `nodeAttrs` means the tailnet policy must change: show the owner the line from the error; do not edit the policy yourself.
@@ -54,7 +54,7 @@ province guest prune <vmid> --host <host> [--force] --yes --json
 ## Recovery
 
 - A recipe failure during `env create --apply` exits 1 but leaves the env bootstrapped: fix the recipe (or ask the owner to) and run `province env provision <name> --json`.
-- `status: "bootstrap_failed"`: the container exists; fix the cause in the error and re-run `province env create <name> --apply --json`.
+- `status: "bootstrap_failed"`: the guest (container or VM) exists; fix the cause in the error and re-run `province env create <name> --apply --json`.
 - A failed `guest move` leaves the source stopped; the error names the command that starts it again (`pct start <vmid>` or `qm start <vmid>` on the source host). After a failed restore the error also names the kept dump and the manual restore command. Do not run either, or retry the move, without the owner.
 - Moving a province env's guest re-homes the env. If the result has `env.tofu_out_of_sync: true`, the move succeeded but the tofu state was not updated: show the owner the `env.fix` commands; `env destroy` refuses until they are done.
 - After a successful move the source copy stays stopped as a rollback. Only when the owner says the moved copy is fine, run `province guest prune <vmid> --host <source> --yes --json`. It refuses (exit 2) a running, onboot=1, protected or locked guest, a province env, or one with no same-named copy on another host; never add `--force` without the owner.

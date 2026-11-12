@@ -6,7 +6,7 @@
 
 Province creates, sets up, moves and publishes development environments on your own Proxmox VE or Incus hosts, one command each, so you and your AI agents can go from idea to running pilot without clicking through a hypervisor UI.
 
-Each environment is an LXC container on your tailnet: your user, your SSH keys, optional Docker, and a [recipe](docs/recipes.md) with the packages, tools and dotfiles you list. You reach it with `ssh dev@<name>` from anywhere on your tailnet.
+Each environment is an LXC container (or, on Incus, a VM) on your tailnet: your user, your SSH keys, optional Docker, and a [recipe](docs/recipes.md) with the packages, tools and dotfiles you list. You reach it with `ssh dev@<name>` from anywhere on your tailnet.
 
 **Create. Connect. Move. Destroy.**
 
@@ -37,7 +37,7 @@ Guides: [Recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Roadmap: [docs
 
 On Proxmox, `guest move` also moves any existing container or VM between standalone hosts, keeping its MAC address and so its IP.
 
-Status: v1. Containers only (`--kind vm` is refused).
+Status: v1. Containers on both backends; VMs (`--kind vm`) on Incus only, Proxmox VMs are planned.
 
 ## What you need
 
@@ -222,7 +222,7 @@ state_dir: ~/infra/province            # one tofu dir per env; commit it to a pr
 user: dev                              # sudo user created in each env (default: your OS user)
 ssh_public_keys: [~/.ssh/id_ed25519.pub] # .pub files: one OpenSSH public key per line (# comments ok)
 tailscale: { tag: "tag:dev", tun: userspace, ssh: true }
-  # tun: userspace (default) | device (/dev/net/tun)
+  # tun: userspace (default) | device (/dev/net/tun passed into containers; refused for VMs, which have their own)
   # ssh: Tailscale SSH in each guest (default true); authorized_keys is installed either way
 vmid_start: 100                        # Proxmox: env create picks the lowest VMID >= this that is free on every Proxmox host
 guest_locales: [en_US.UTF-8]           # generated in each guest so locales your ssh client forwards work (default)
@@ -323,7 +323,7 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 
 | Command | What it does |
 |---|---|
-| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
+| `env create <name> [--host h] [--kind lxc\|vm] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | `--kind vm` (Incus hosts only; refused on Proxmox) makes the env a virtual machine instead of a container. Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
 | `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, Tailscale, optional Docker. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
 | `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
 | `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). JSON: each env has `expires_at` (RFC3339 UTC, only with a ttl) and `expired`; the text table's `EXPIRES` column marks expired envs `(expired)`. |
@@ -364,7 +364,7 @@ Incus hosts add no secret: the incus remote's client certificate lives in your I
 ## Recovery
 
 - **Recipe failed**: the env is bootstrapped and on the tailnet; the command exits 1 and names the failing step. Fix the recipe and run `province env provision <name>`.
-- **Bootstrap failed** (`status: bootstrap_failed`): the container and its state are kept. Fix the cause and re-run `province env create <name> --apply`; apply is a no-op if nothing changed and the bootstrap is idempotent.
+- **Bootstrap failed** (`status: bootstrap_failed`): the guest (container or VM) and its state are kept. Fix the cause and re-run `province env create <name> --apply`; apply is a no-op if nothing changed and the bootstrap is idempotent.
 - **tofu apply failed**: fix the cause (often a token privilege) and re-run `province env create <name> --apply`.
 - **Destroy failed**: the state dir is kept; re-run `province env destroy <name> --yes`.
 - **Another guest at the env's VMID**: before `expose`, `unexpose`, `provision`, `destroy` or a re-run of `create --apply`, province checks that the guest at the env's VMID is an LXC container named after the env (on Incus: an instance whose `user.province.env` is the env's name). If not, it refuses (exit 2) and names the guest it found; `show` and `list` report the env as `unknown` with that error. If you renamed the env's container, rename it back (`pct set <vmid> --hostname <env>`); if it is gone, remove the env's state dir by hand. A new env never gets a VMID that another env in the state dir records, even when that env's guest is gone.

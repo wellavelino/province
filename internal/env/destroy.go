@@ -23,7 +23,7 @@ type DestroyResult struct {
 // before touching anything.
 func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyResult, error) {
 	if !yes {
-		return nil, errs.Refusedf("env destroy %s deletes the container and its disk: pass --yes", name)
+		return nil, errs.Refusedf("env destroy %s deletes its guest (container or VM) and disk: pass --yes", name)
 	}
 	md, err := m.load(name)
 	if err != nil {

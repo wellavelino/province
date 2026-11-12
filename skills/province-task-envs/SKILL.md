@@ -28,7 +28,7 @@ Run small, trusted commands (reading files, `git log`, formatting) where you are
 ## Container or VM
 
 - **Container** (default): starts in seconds. Fine for your own code and trusted dependencies.
-- **VM** (`--kind vm`, when province supports it on the tasks host): its own kernel, boots in 10–30 s. Use it for untrusted code. If `--kind vm` is refused (exit 2), use a container and tell the owner the work ran without a VM boundary.
+- **VM** (`--kind vm`, Incus hosts only): its own kernel, boots in 10–30 s (province waits for the VM's agent before the bootstrap). Use it for untrusted code. If `--kind vm` is refused (exit 2: a Proxmox host, or `tailscale.tun: device` in the site config), use a container and tell the owner the work ran without a VM boundary.
 
 Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so `province env gc --yes` removes an env a crashed session forgot. Never pass `--protect` to a task env. When province supports it, rely on `isolated: true` in the tasks host config (no LAN access). Check with `province env create --help`; do not invent flags.
 

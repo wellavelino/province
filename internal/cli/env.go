@@ -15,7 +15,7 @@ import (
 )
 
 func (a *app) envCmd() *cobra.Command {
-	c := &cobra.Command{Use: "env", Short: "Manage environments (LXC containers on Proxmox or Incus)"}
+	c := &cobra.Command{Use: "env", Short: "Manage environments (containers on Proxmox or Incus, VMs on Incus)"}
 	c.AddCommand(a.envCreateCmd(), a.envListCmd(), a.envShowCmd(), a.envDestroyCmd(), a.envExposeCmd(), a.envUnexposeCmd(), a.envProvisionCmd(), a.envProtectCmd(), a.envGCCmd())
 	return c
 }
@@ -60,19 +60,17 @@ func printRecipe(w io.Writer, r *env.Recipe) {
 }
 
 func (a *app) envCreateCmd() *cobra.Command {
-	var kind, ttl string
+	var ttl string
 	var o env.CreateOpts
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Plan (default) or, with --apply, create and bootstrap an environment",
 		Args:  exactArgs(1, "name"),
 		RunE: a.action(func(cmd *cobra.Command, args []string) error {
-			switch kind {
-			case "lxc":
-			case "vm":
-				return errs.Refusedf("--kind vm is not supported in v1; use --kind lxc")
+			switch o.Kind {
+			case "", env.KindLXC, env.KindVM: // env.Create checks vm against the host
 			default:
-				return errs.Refusedf("--kind must be lxc or vm, got %q", kind)
+				return errs.Refusedf("--kind must be lxc or vm, got %q", o.Kind)
 			}
 			if cmd.Flags().Changed("ttl") {
 				d, err := parseTTL(ttl)
@@ -115,7 +113,7 @@ func (a *app) envCreateCmd() *cobra.Command {
 		}),
 	}
 	fl := cmd.Flags()
-	fl.StringVar(&kind, "kind", "lxc", "guest kind: lxc (vm is not supported in v1)")
+	fl.StringVar(&o.Kind, "kind", "", "guest kind: lxc (container) or vm (Incus hosts only) (default: the recorded one, then lxc)")
 	fl.StringVar(&o.Host, "host", "", "host name from the site config (default: defaults.host)")
 	fl.IntVar(&o.CPU, "cpu", 0, "CPU cores (default: defaults.cpu)")
 	fl.IntVar(&o.RAM, "ram", 0, "memory in MiB (default: defaults.ram)")
@@ -246,11 +244,11 @@ func (a *app) envDestroyCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "destroy <name> --yes",
-		Short: "Destroy an environment: tailnet node, container and state",
+		Short: "Destroy an environment: tailnet node, guest and state",
 		Args:  exactArgs(1, "name"),
 		RunE: a.action(func(cmd *cobra.Command, args []string) error {
 			if !yes {
-				return errs.Refusedf("env destroy %s deletes the container and its disk: pass --yes", args[0])
+				return errs.Refusedf("env destroy %s deletes its guest (container or VM) and disk: pass --yes", args[0])
 			}
 			m, err := a.manager()
 			if err != nil {

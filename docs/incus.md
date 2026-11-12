@@ -2,7 +2,7 @@
 
 Province can run environments on [Incus](https://linuxcontainers.org/incus/) as well as on Proxmox VE. Incus runs the same kind of LXC containers on any Linux machine, so a spare box or your own workstation is enough.
 
-On an Incus host, an env is one Incus container. OpenTofu declares it (provider `lxc/incus`), and province runs the bootstrap and recipes through `incus exec`. Everything inside the guest is the same as on Proxmox: your user and SSH keys, sudo, optional Docker, Tailscale, [recipes](recipes.md) and Funnel.
+On an Incus host, an env is one Incus container, or with `--kind vm` one Incus virtual machine. OpenTofu declares it (provider `lxc/incus`), and province runs the bootstrap and recipes through `incus exec`. Everything inside the guest is the same as on Proxmox: your user and SSH keys, sudo, optional Docker, Tailscale, [recipes](recipes.md) and Funnel.
 
 ## What you need
 
@@ -65,12 +65,23 @@ Before tofu runs, province checks that the remote answers and has the storage po
 | `env provision` (recipes) | Yes |
 | `env expose`, `unexpose` (Funnel) | Yes |
 | `--docker` | Yes: sets `security.nesting` and the `mknod` and `setxattr` syscall interception in the tofu config |
-| `tailscale.tun: device` | Yes: passes `/dev/net/tun` through as a `unix-char` device |
+| `tailscale.tun: device` | Containers: passes `/dev/net/tun` through as a `unix-char` device. VMs: refused (exit 2) |
+| `--kind vm` | Yes: see [VMs](#vms) |
 | `guest move`, `guest prune` | No: refused with exit 2. They move guests between Proxmox hosts only. |
 
 A guest that is stopped can be started with `incus start <remote>:<name>`; commands that need a running guest say so.
 
+## VMs
+
+`province env create api --host box --kind vm` makes the env an Incus virtual machine (`type = "virtual-machine"`) from the same image alias; Incus picks the image's VM variant. A VM has its own kernel, so it is a stronger wall than a container: use it for untrusted code. It boots in 10 to 30 seconds; before the bootstrap, province waits (up to two minutes) until `incus exec` reaches the VM's agent.
+
+- The server needs KVM (`/dev/kvm`); in a Proxmox VM, give it CPU type `host`.
+- `--cpu`, `--ram` and `--disk` work as for containers; the root disk is created at `--disk` GiB.
+- `--docker` installs Docker as usual; a VM needs none of the container `security.*` keys, so none are set.
+- `tailscale.tun: device` is refused for a VM: it passes the host's `/dev/net/tun` into a container, and a VM has its own. Keep `tun: userspace` (the default).
+- The kind is recorded with the env: a re-run of `env create` keeps it, and a different `--kind` is refused until the env is destroyed. Records from before kinds existed are containers.
+
 ## Limits
 
-- Containers only; `--kind vm` is refused as on Proxmox.
+- `--kind vm` works on Incus only; on a Proxmox host it is refused (exit 2) until province can create VMs there (that needs a cloud-init template with qemu-guest-agent).
 - An env stays on the backend it was created on. If a host's `backend` changes in the config, commands on its existing envs are refused; destroy and recreate them.

@@ -10,7 +10,7 @@ Province does three things to one kind of object, the env:
 2. **Connect** it to your tailnet.
 3. **Configure** it with a recipe.
 
-Anything else belongs to the host platform (Proxmox, Incus) or to the user's recipe. A new feature has to fit one of the three, stay small, and work the same on every backend, or it does not go in.
+Anything else belongs to the host platform (Proxmox, Incus) or to the user's recipe. A new feature has to fit one of the three, stay small, and work the same on every backend, or it does not go in. VMs are the stated exception: `--kind vm` works on Incus first, and Proxmox follows (planned, below).
 
 ## 1. Prove what exists
 
@@ -75,11 +75,17 @@ Long-lived is already the default: an env stays until it is destroyed and starts
 
 Backups of long-lived envs stay with the platform (Proxmox backup jobs, `incus export`).
 
+## 5. VMs (`--kind vm`)
+
+A stronger wall than a container: the env has its own kernel.
+
+- [x] Incus: `type = "virtual-machine"` in the tofu config, the kind recorded with the env, a wait for the VM's agent before the bootstrap.
+- [ ] Proxmox: needs a cloud-init template with qemu-guest-agent. Until then `--kind vm` on a Proxmox host is refused.
+
 ## Not building, for now
 
 Each of these was considered and set aside. Reopen one only with a concrete need.
 
-- **VMs** (`--kind vm`). A stronger wall than a container, but a large change on both backends. `isolated` covers the likelier risk first.
 - **A credential proxy** that adds tokens to requests as they leave the env. Use short-lived, narrowly scoped tokens instead.
 - **Snapshots and `env reset`.** Recreating from a recipe takes minutes.
 - **More backends** (Docker, cloud VMs, NixOS hosts).

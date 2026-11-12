@@ -34,10 +34,16 @@ const (
 // MetadataFile is the per-environment record next to the tofu files.
 const MetadataFile = "province.json"
 
+// Guest kinds, as recorded in Metadata.Kind.
+const (
+	KindLXC = "lxc" // a system container (also when empty, as in old records)
+	KindVM  = "vm"  // a virtual machine (Incus only)
+)
+
 // Metadata is what province knows about an environment.
 type Metadata struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"`
+	Kind string `json:"kind"` // lxc or vm; see KindLXC, KindVM
 	// Backend of the env's host: proxmox (also when empty, as in records
 	// written before backends existed) or incus.
 	Backend     string `json:"backend,omitempty"`
@@ -102,8 +108,14 @@ type Manager struct {
 	// Incus returns the client of an Incus host.
 	Incus   func(config.Host) incus.Client
 	Tailnet Tailnet // nil when TS_API_KEY is not set
-	Now     func() time.Time
-	Log     io.Writer // progress and warnings (stderr)
+	// AgentTimeout bounds how long create waits for a new VM's guest agent
+	// to answer before bootstrapping it (default DefaultAgentTimeout).
+	AgentTimeout time.Duration
+	// Sleep pauses between tries while waiting; nil sleeps for real,
+	// returning early with ctx's error.
+	Sleep func(ctx context.Context, d time.Duration) error
+	Now   func() time.Time
+	Log   io.Writer // progress and warnings (stderr)
 }
 
 // backend returns the env's backend, proxmox for old records.
@@ -112,6 +124,25 @@ func (md *Metadata) backend() string {
 		return config.BackendProxmox
 	}
 	return md.Backend
+}
+
+// kind returns the env's guest kind, lxc for records without one.
+func (md *Metadata) kind() string {
+	if md.Kind == "" {
+		return KindLXC
+	}
+	return md.Kind
+}
+
+// vm reports whether the env's guest is a virtual machine.
+func (md *Metadata) vm() bool { return md.kind() == KindVM }
+
+// guestNoun is "container" or "VM", for messages.
+func (md *Metadata) guestNoun() string {
+	if md.vm() {
+		return "VM"
+	}
+	return "container"
 }
 
 // created reports whether the env's guest was created (tofu apply ran).

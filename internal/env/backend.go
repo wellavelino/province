@@ -55,8 +55,8 @@ type live struct {
 // notOurs is the error for a guest that sits where env md's guest should
 // be but is not it.
 func notOurs(md *Metadata, h config.Host, found, fix string) error {
-	return errs.Preflightf("%s on %s is %s, not env %s's container: province leaves it alone; %s",
-		md.guestLabel(), h.Name, found, md.Name, fix)
+	return errs.Preflightf("%s on %s is %s, not env %s's %s: province leaves it alone; %s",
+		md.guestLabel(), h.Name, found, md.Name, md.guestNoun(), fix)
 }
 
 // planned is what plan decided for a guest that does not exist yet.
@@ -303,12 +303,13 @@ func (b incusBackend) plan(ctx context.Context, _ *Metadata) (planned, error) {
 	return planned{}, nil
 }
 
-// mainTF carries nesting and /dev/net/tun itself, so prepare has nothing to do.
+// mainTF carries nesting and /dev/net/tun itself, so prepare has nothing
+// to set. A VM gets neither: it has its own kernel.
 func (b incusBackend) mainTF(md *Metadata, _ []string, _ planned) ([]byte, error) {
 	return tfgen.GenerateIncus(tfgen.Incus{
 		Name: md.Name, Remote: b.h.Remote, Project: b.h.Project, Image: b.h.Image,
 		Pool: b.h.StoragePool, Network: b.h.Network, CPU: md.CPU, RAM: md.RAM, Disk: md.Disk,
-		Docker: md.Docker, TunDevice: md.Tun == config.TunDevice,
+		VM: md.vm(), Docker: md.Docker, TunDevice: !md.vm() && md.Tun == config.TunDevice,
 	})
 }
 
@@ -321,14 +322,25 @@ func (b incusBackend) adopt(out map[string]json.RawMessage, md *Metadata) error 
 	return nil
 }
 
-func (incusBackend) prepare(context.Context, *Metadata) error { return nil }
+// prepare waits for a VM's incus-agent, which `incus exec` needs and which
+// comes up some seconds after boot. A container needs nothing.
+func (b incusBackend) prepare(ctx context.Context, md *Metadata) error {
+	if !md.vm() {
+		return nil
+	}
+	g, err := b.guest(md)
+	if err != nil {
+		return err
+	}
+	return b.m.waitAgent(ctx, g, md, b.h)
+}
 
 func (b incusBackend) guest(md *Metadata) (guest, error) {
 	c, err := b.client()
 	if err != nil {
 		return nil, err
 	}
-	return incusGuest{c: c, remote: b.h.Remote, name: md.Name}, nil
+	return incusGuest{c: c, remote: b.h.Remote, name: md.Name, vm: md.vm()}, nil
 }
 
 func (b incusBackend) list(ctx context.Context) ([]incus.Instance, error) {
@@ -340,19 +352,28 @@ func (b incusBackend) list(ctx context.Context) ([]incus.Instance, error) {
 }
 
 // identify finds env md's instance in list by name. in is nil when there
-// is none; err is set when it is not a container carrying the env's name
-// in user.province.env (which province's tofu config sets).
+// is none; err is set when it is not of the env's recorded kind (container
+// or VM) or does not carry the env's name in user.province.env (which
+// province's tofu config sets).
 func (b incusBackend) identify(list []incus.Instance, md *Metadata) (in *incus.Instance, err error) {
 	i := slices.IndexFunc(list, func(in incus.Instance) bool { return in.Name == md.Name })
 	if i < 0 {
 		return nil, nil
 	}
 	in = &list[i]
-	if in.Type != "virtual-machine" && in.Env == md.Name {
+	if in.Type == incusType(md) && in.Env == md.Name {
 		return in, nil
 	}
 	return in, notOurs(md, b.h, fmt.Sprintf("a %s with %s=%q", in.Type, incus.EnvKey, in.Env),
-		fmt.Sprintf("if %s's container is gone, remove %s by hand", md.Name, b.m.dir(md.Name)))
+		fmt.Sprintf("if %s's %s is gone, remove %s by hand", md.Name, md.guestNoun(), b.m.dir(md.Name)))
+}
+
+// incusType is the Incus instance type of env md's guest.
+func incusType(md *Metadata) string {
+	if md.vm() {
+		return incus.TypeVM
+	}
+	return incus.TypeContainer
 }
 
 func (b incusBackend) verify(ctx context.Context, md *Metadata) (bool, error) {
@@ -380,7 +401,7 @@ func (b incusBackend) statuses(ctx context.Context, mds []*Metadata) ([]live, er
 	out := make([]live, len(mds))
 	for i, md := range mds {
 		switch in, err := b.identify(list, md); {
-		case in == nil, in.Type == "virtual-machine": // the env's container is gone
+		case in == nil, in.Type != incusType(md): // the env's guest is gone
 			out[i] = live{Status: LiveMissing}
 		case err != nil:
 			out[i] = live{Status: LiveUnknown, Err: err}

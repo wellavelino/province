@@ -11,7 +11,7 @@ const IncusProviderVersion = "1.2.1"
 // IncusResourceAddress is the instance's address in the generated config.
 const IncusResourceAddress = "incus_instance.env"
 
-// Incus describes one container environment on an Incus server. The
+// Incus describes one environment, a container or a VM, on an Incus server. The
 // provider authenticates through the operator's Incus client config (the
 // remote added with `incus remote add`), so no secret goes in here.
 type Incus struct {
@@ -24,6 +24,10 @@ type Incus struct {
 	CPU     int    // cores
 	RAM     int    // MiB
 	Disk    int    // GiB
+	// VM makes the instance a virtual machine (the image's VM variant)
+	// instead of a container. A VM has its own kernel, so Docker and
+	// TunDevice add nothing to it.
+	VM bool
 	// Docker turns on nesting and the syscall interception Docker needs in
 	// an unprivileged container.
 	Docker bool
@@ -64,7 +68,7 @@ func GenerateIncus(i Incus) ([]byte, error) {
 		"limits.memory":     lit(strconv.Itoa(i.RAM) + "MiB"),
 		"user.province.env": lit(i.Name),
 	}
-	if i.Docker {
+	if i.Docker && !i.VM {
 		cfg["security.nesting"] = "true"
 		cfg["security.syscalls.intercept.mknod"] = "true"
 		cfg["security.syscalls.intercept.setxattr"] = "true"
@@ -75,8 +79,12 @@ func GenerateIncus(i Incus) ([]byte, error) {
 	if i.Network != "" {
 		devices = append(devices, device{Name: "eth0", Type: "nic", Properties: map[string]lit{"name": "eth0", "network": lit(i.Network)}})
 	}
-	if i.TunDevice {
+	if i.TunDevice && !i.VM {
 		devices = append(devices, device{Name: "tun", Type: "unix-char", Properties: map[string]lit{"source": "/dev/net/tun", "path": "/dev/net/tun"}})
+	}
+	typ := lit("container")
+	if i.VM {
+		typ = "virtual-machine"
 	}
 	f := incusFile{
 		Terraform: terraform{RequiredProviders: map[string]requiredProvider{
@@ -89,7 +97,7 @@ func GenerateIncus(i Incus) ([]byte, error) {
 			Remote:      lit(i.Remote),
 			Project:     lit(i.Project),
 			Image:       lit(i.Image),
-			Type:        "container",
+			Type:        typ,
 			Running:     true,
 			Config:      cfg,
 			Device:      devices,
