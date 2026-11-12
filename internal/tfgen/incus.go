@@ -39,62 +39,62 @@ type incusFile struct {
 }
 
 type inst struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Remote      string            `json:"remote"`
-	Project     string            `json:"project,omitempty"`
-	Image       string            `json:"image"`
-	Type        string            `json:"type"`
-	Running     bool              `json:"running"`
-	Config      map[string]string `json:"config"`
-	Device      []device          `json:"device"`
+	Name        lit            `json:"name"`
+	Description lit            `json:"description"`
+	Remote      lit            `json:"remote"`
+	Project     lit            `json:"project,omitempty"`
+	Image       lit            `json:"image"`
+	Type        lit            `json:"type"`
+	Running     bool           `json:"running"`
+	Config      map[string]lit `json:"config"`
+	Device      []device       `json:"device"`
 }
 
 type device struct {
-	Name       string            `json:"name"`
-	Type       string            `json:"type"`
-	Properties map[string]string `json:"properties"`
+	Name       lit            `json:"name"`
+	Type       lit            `json:"type"`
+	Properties map[string]lit `json:"properties"`
 }
 
 // GenerateIncus renders main.tf.json for i.
 func GenerateIncus(i Incus) ([]byte, error) {
-	cfg := map[string]string{
+	cfg := map[string]lit{
 		"boot.autostart":    "true",
-		"limits.cpu":        strconv.Itoa(i.CPU),
-		"limits.memory":     strconv.Itoa(i.RAM) + "MiB",
-		"user.province.env": i.Name,
+		"limits.cpu":        lit(strconv.Itoa(i.CPU)),
+		"limits.memory":     lit(strconv.Itoa(i.RAM) + "MiB"),
+		"user.province.env": lit(i.Name),
 	}
 	if i.Docker {
 		cfg["security.nesting"] = "true"
 		cfg["security.syscalls.intercept.mknod"] = "true"
 		cfg["security.syscalls.intercept.setxattr"] = "true"
 	}
-	devices := []device{{Name: "root", Type: "disk", Properties: map[string]string{
-		"path": "/", "pool": i.Pool, "size": strconv.Itoa(i.Disk) + "GiB",
+	devices := []device{{Name: "root", Type: "disk", Properties: map[string]lit{
+		"path": "/", "pool": lit(i.Pool), "size": lit(strconv.Itoa(i.Disk) + "GiB"),
 	}}}
 	if i.Network != "" {
-		devices = append(devices, device{Name: "eth0", Type: "nic", Properties: map[string]string{"name": "eth0", "network": i.Network}})
+		devices = append(devices, device{Name: "eth0", Type: "nic", Properties: map[string]lit{"name": "eth0", "network": lit(i.Network)}})
 	}
 	if i.TunDevice {
-		devices = append(devices, device{Name: "tun", Type: "unix-char", Properties: map[string]string{"source": "/dev/net/tun", "path": "/dev/net/tun"}})
+		devices = append(devices, device{Name: "tun", Type: "unix-char", Properties: map[string]lit{"source": "/dev/net/tun", "path": "/dev/net/tun"}})
 	}
 	f := incusFile{
 		Terraform: terraform{RequiredProviders: map[string]requiredProvider{
-			"incus": {Source: "lxc/incus", Version: IncusProviderVersion},
+			"incus": {Source: "lxc/incus", Version: lit(IncusProviderVersion)},
 		}},
 		Provider: map[string]struct{}{"incus": {}},
 		Resource: map[string]map[string]inst{"incus_instance": {"env": {
-			Name:        i.Name,
-			Description: "Managed by province (env " + i.Name + ")",
-			Remote:      i.Remote,
-			Project:     i.Project,
-			Image:       i.Image,
+			Name:        lit(i.Name),
+			Description: lit("Managed by province (env " + i.Name + ")"),
+			Remote:      lit(i.Remote),
+			Project:     lit(i.Project),
+			Image:       lit(i.Image),
 			Type:        "container",
 			Running:     true,
 			Config:      cfg,
 			Device:      devices,
 		}}},
-		Output: map[string]output{"name": {Value: "${" + IncusResourceAddress + ".name}"}},
+		Output: map[string]output{"name": {Value: expr("${" + IncusResourceAddress + ".name}")}},
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {

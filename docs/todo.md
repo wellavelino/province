@@ -43,7 +43,7 @@ Cheap fixes for leads that need an outside fact to confirm:
 - [x] `env create --apply`: refuse an env marked `tofu_out_of_sync`.
 - [ ] Re-home after a move: validate the env name and use the directory that matched.
 - [ ] Print the MagicDNS name the node actually got, not the bare env name, in the `ssh` hint.
-- [ ] Escape `${` and `%{` in generated tofu strings; accept only real public-key lines from `ssh_public_keys`.
+- [x] Escape `${` and `%{` in generated tofu strings; accept only real public-key lines from `ssh_public_keys`.
 - [x] Put guest error text in its own `--json` field and tell agents in SKILL.md that it is data.
 
 Hardening:

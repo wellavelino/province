@@ -56,6 +56,7 @@ func TestCreatePreflightFailuresStopBeforeTofu(t *testing.T) {
 		"storage content":    {func(r *rig) { r.clients["pve1"].StorageLs[0].Content = []string{"images"} }, "rootdir"},
 		"api down":           {func(r *rig) { r.clients["pve1"].Err = errors.New("dial tcp: connection refused") }, "connection refused"},
 		"key file":           {func(r *rig) { r.m.Cfg.SSHPublicKeys = []string{"/nonexistent/id.pub"} }, "ssh public key"},
+		"private key":        {func(r *rig) { writeKeyFile(t, r, pubKey+"\n"+privKey) }, "line 2: this is a private key"},
 	}
 	for name, c := range cases {
 		r := newRig(t)
@@ -459,5 +460,36 @@ func TestCreateKeepsTheVMIDOfACreatedEnv(t *testing.T) {
 	tf, _ := os.ReadFile(filepath.Join(r.dir("demo"), "main.tf.json"))
 	if !strings.Contains(string(tf), `"vm_id": 105,`) {
 		t.Fatal("re-run changed the vm_id of an existing container")
+	}
+}
+
+// privKey is a made-up private key file (not a real key).
+const privKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----\n"
+
+func writeKeyFile(t *testing.T, r *rig, body string) {
+	t.Helper()
+	if err := os.WriteFile(r.m.Cfg.SSHPublicKeys[0], []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateRejectsBadKeyLinesWithoutEchoingThem(t *testing.T) {
+	for name, body := range map[string]string{
+		"private key":  privKey,
+		"bad base64":   "ssh-ed25519 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ! dev\n",
+		"unknown type": "ssh-dss b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAA dev\n",
+	} {
+		r := newRig(t)
+		writeKeyFile(t, r, body)
+		_, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true})
+		if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "line 1") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ") {
+			t.Errorf("%s: error echoes the key material: %v", name, err)
+		}
+		if r.mutations() != 0 {
+			t.Errorf("%s: mutations after rejected key: %v", name, r.j.Entries())
+		}
 	}
 }

@@ -22,7 +22,7 @@ const (
 	template = "local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst"
 	authKey  = "tskey-auth-kSECRET-0123456789"
 	apiToken = "province@pve!cli=0b8e7d6c-1111-2222-3333-444455556666"
-	pubKey   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHk+/9Qx= dev@laptop"
+	pubKey   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEIDxYdJCsyOUBHTlVcY2pxeH+GjZSboqmwt77FzNPa dev@laptop"
 )
 
 var fixedNow = time.Date(2026, 11, 8, 10, 15, 0, 0, time.UTC)

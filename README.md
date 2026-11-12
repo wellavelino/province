@@ -220,7 +220,7 @@ Keep it in your own private repo; pass it with `--config` or `PROVINCE_CONFIG`. 
 ```yaml
 state_dir: ~/infra/province            # one tofu dir per env; commit it to a private repo if you like
 user: dev                              # sudo user created in each env (default: your OS user)
-ssh_public_keys: [~/.ssh/id_ed25519.pub]
+ssh_public_keys: [~/.ssh/id_ed25519.pub] # .pub files: one OpenSSH public key per line (# comments ok)
 tailscale: { tag: "tag:dev", tun: userspace, ssh: true }
   # tun: userspace (default) | device (/dev/net/tun)
   # ssh: Tailscale SSH in each guest (default true); authorized_keys is installed either way

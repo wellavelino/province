@@ -75,7 +75,7 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	tmp := t.TempDir()
 	key := filepath.Join(tmp, "id.pub")
-	os.WriteFile(key, []byte("ssh-ed25519 AAAAC3Nz dev@laptop\n"), 0o600)
+	os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEIDxYdJCsyOUBHTlVcY2pxeH+GjZSboqmwt77FzNPa dev@laptop\n"), 0o600)
 	w := &world{t: t, stateDir: filepath.Join(tmp, "state"), j: &hostopstest.Journal{}, tailnet: &fakeTailnet{}}
 	w.cfgPath = filepath.Join(tmp, "province.yaml")
 	cfg := fmt.Sprintf(`state_dir: %s

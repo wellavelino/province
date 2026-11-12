@@ -281,6 +281,8 @@ func (m *Manager) createHost(o CreateOpts, md *Metadata) (config.Host, error) {
 }
 
 // readKeys returns the public key lines of every configured key file.
+// Every non-blank, non-comment line must be a public key line; an error
+// names the file and line but never quotes it (it may be a private key).
 func (m *Manager) readKeys() ([]string, error) {
 	var keys []string
 	for _, p := range m.Cfg.SSHPublicKeys {
@@ -288,10 +290,14 @@ func (m *Manager) readKeys() ([]string, error) {
 		if err != nil {
 			return nil, errs.Preflightf("ssh public key: %v", err)
 		}
-		for _, line := range strings.Split(string(b), "\n") {
-			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
-				keys = append(keys, line)
+		for n, line := range strings.Split(string(b), "\n") {
+			if line = strings.TrimSpace(line); line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			if err := config.CheckPublicKey(line); err != nil {
+				return nil, errs.Preflightf("ssh public key %s line %d: %v", p, n+1, err)
+			}
+			keys = append(keys, line)
 		}
 	}
 	if len(keys) == 0 {
