@@ -82,6 +82,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		md = nil
 	case err != nil:
 		return nil, err
+	case o.Apply && md.TofuOutOfSync:
+		// The recorded guest moved but tofu still tracks the old one.
+		return nil, md.refuseOutOfSync("tofu apply")
 	case md.Status == StatusBootstrapped:
 		return nil, errs.Refusedf("env %s already exists on %s (%s); destroy it first", o.Name, md.Host, md.guestLabel())
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/wellavelino/province/internal/errs"
 )
@@ -30,9 +29,8 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 	if err != nil {
 		return nil, err
 	}
-	if md.TofuOutOfSync {
-		return nil, errs.Refusedf("env %s was moved but its tofu state still points at the old guest, so destroy could hit the wrong one; finish the move first:\n  %s",
-			name, strings.Join(md.TofuFix, "\n  "))
+	if err := md.refuseOutOfSync("destroy"); err != nil {
+		return nil, err
 	}
 	res := &DestroyResult{Name: name, Host: md.Host, VMID: md.VMID, Instance: md.Instance, Warnings: []string{}}
 	warn := func(format string, a ...any) {

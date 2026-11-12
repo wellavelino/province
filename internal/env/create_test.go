@@ -229,6 +229,35 @@ func TestCreateExistingBootstrappedRefused(t *testing.T) {
 	}
 }
 
+// A moved env whose tofu state still tracks the old guest: tofu apply would
+// act on the wrong one, so create --apply refuses before any call.
+func TestCreateApplyRefusesTofuOutOfSync(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].ExecOut = "done?\n" // bootstrap fails: a re-run would apply again
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err == nil {
+		t.Fatal("no error")
+	}
+	md := r.metadata(t, "demo")
+	fix := []string{"cd " + r.dir("demo"), "tofu import proxmox_virtual_environment_container.env pve2/900"}
+	md.Host, md.Node, md.VMID, md.TofuOutOfSync, md.TofuFix = "pve2", "pve2", 900, true, fix
+	if err := r.m.writeMetadata(r.dir("demo"), md); err != nil {
+		t.Fatal(err)
+	}
+	r.hosts["pve1"].ExecOut = "PROVINCE_TS_IP=100.64.0.7\n"
+	before, api, tofus := r.mutations(), r.apiCalls(), len(r.tofuHosts)
+	_, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true})
+	if errs.KindOf(err) != errs.Refused || errs.ExitCode(err) != 2 ||
+		!strings.Contains(err.Error(), "tofu state still points at the old guest") || !strings.Contains(err.Error(), "\n  "+fix[1]) {
+		t.Fatalf("err = %v", err)
+	}
+	if r.mutations() != before || r.apiCalls() != api || len(r.tofuHosts) != tofus {
+		t.Fatalf("calls after refusal: %v", r.j.Entries()[before:])
+	}
+	if got := r.metadata(t, "demo"); !got.TofuOutOfSync || got.VMID != 900 {
+		t.Fatalf("metadata changed: %+v", got)
+	}
+}
+
 func TestCreateOtherHostForExistingEnvRefused(t *testing.T) {
 	r := newRig(t)
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo"}); err != nil {

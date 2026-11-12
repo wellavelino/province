@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wellavelino/province/internal/config"
+	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/hostops"
 	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
@@ -108,6 +110,17 @@ func (md *Metadata) backend() string {
 
 // created reports whether the env's guest was created (tofu apply ran).
 func (md *Metadata) created() bool { return md.VMID != 0 || md.Instance != "" }
+
+// refuseOutOfSync refuses op (destroy, tofu apply) on an env whose tofu
+// state still points at the guest it was moved from, with the steps that
+// finish the move; nil when the state is in sync.
+func (md *Metadata) refuseOutOfSync(op string) error {
+	if !md.TofuOutOfSync {
+		return nil
+	}
+	return errs.Refusedf("env %s was moved but its tofu state still points at the old guest, so %s could hit the wrong one; finish the move first:\n  %s",
+		md.Name, op, strings.Join(md.TofuFix, "\n  "))
+}
 
 // guestLabel names the env's guest without its host: "vmid 105" or
 // "instance api".
