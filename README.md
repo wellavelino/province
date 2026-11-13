@@ -382,7 +382,7 @@ Incus hosts add no secret: the incus remote's client certificate lives in your I
 Two more tests run against real systems:
 
 - `go test -tags integration -run TestRecipeInDebianContainer ./internal/bootstrap/` applies a real recipe twice in a Debian 13 container (needs Docker and network access).
-- `bash scripts/e2e-incus.sh` drives the real binary against a real Incus server through its `local` remote. Without `TS_AUTHKEY` it stops after the plan; with it, it runs the full create, provision and destroy cycle.
+- `bash scripts/e2e-incus.sh` drives the real binary against a real Incus server through its `local` remote, on the Incus host itself: an isolated container with `--protect`, and a `--kind vm` (a container when there is no `/dev/kvm`), both with `--ttl`. Without `TS_AUTHKEY` it does what needs no tailnet: the plans, `env list`/`show`/`gc` and the `--protect` refusal. With it, it runs the full create, provision and destroy cycle of both, probes the isolation from inside the env, and checks `env gc`. CI installs Incus 6.0 LTS from the Zabbly repo for it and passes the Tailscale secrets only on pushes to `main` and pull requests from this repo's own branches.
 
 CI (`.github/workflows/ci.yml`) runs all four on every push and pull request.
 

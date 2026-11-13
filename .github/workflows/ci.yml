@@ -59,8 +59,9 @@ jobs:
       - run: go test -tags integration -run TestRecipeInDebianContainer -v -timeout 20m ./internal/bootstrap/
 
   incus:
-    name: real Incus (plan always; full lifecycle on pushes to main)
+    name: real Incus (plans always; full lifecycle with the Tailscale secrets)
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,23 +73,60 @@ jobs:
         with:
           tofu_version: 1.13.9
           tofu_wrapper: false
+      # Incus from the Zabbly 6.0 LTS repo: Ubuntu 24.04's own incus (6.0.0)
+      # lacks the network_bridge_acl_devices API extension that isolated
+      # envs need (6.0.4+ has it). The repo key is pinned by fingerprint,
+      # as published in https://github.com/zabbly/incus (README).
       - name: Install and start Incus
+        env:
+          ZABBLY_KEY_FPR: 4EFC590696CB15B87C73A3AD82CC8797C838DCFD
         run: |
+          # nftables first, so the daemon picks the nftables firewall
+          # driver, which ACLs on a bridge NIC need.
+          sudo apt-get update -q
+          sudo apt-get install -y -q nftables
+          curl -fsSL https://pkgs.zabbly.com/key.asc -o "$RUNNER_TEMP/zabbly.asc"
+          fprs=$(gpg --show-keys --with-colons "$RUNNER_TEMP/zabbly.asc" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')
+          if [ "$fprs" != "$ZABBLY_KEY_FPR" ]; then
+            echo "Zabbly key fingerprint(s) '$fprs', want '$ZABBLY_KEY_FPR'" >&2
+            exit 1
+          fi
+          sudo install -D -m 0644 "$RUNNER_TEMP/zabbly.asc" /etc/apt/keyrings/zabbly.asc
+          sudo tee /etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/lts-6.0
+          Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+          Components: main
+          Architectures: $(dpkg --print-architecture)
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
           sudo apt-get update -q
           sudo apt-get install -y -q incus
+          apt-cache policy incus
           sudo incus admin init --minimal
           # Let the runner user use the daemon without a new login session.
           sudo chmod 0666 /var/lib/incus/unix.socket
-          # Docker on the runner drops forwarded traffic; let incusbr0 through.
+          # Docker on the runner drops forwarded traffic (its FORWARD policy
+          # is drop, and with the nftables driver every forward hook still
+          # sees the packet); let incusbr0 through.
           sudo iptables -I DOCKER-USER -i incusbr0 -j ACCEPT
           sudo iptables -I DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
           incus version
+          incus info | grep -i firewall
+          incus info | grep -qiE 'firewall: *nftables' || { echo "Incus does not use the nftables firewall driver" >&2; exit 1; }
+          # VMs: the daemon runs as root, so it can open /dev/kvm without
+          # the udev rule the runner user would need. Without /dev/kvm the
+          # script skips the VM and says so.
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+          incus query /1.0 | jq -r '"drivers: " + .environment.driver'
           incus list local:
       # The Tailscale secrets reach only this step, and only on pushes to
-      # main: elsewhere (pull requests, other branches) they are empty, so
-      # the script stops after the plan.
+      # main and on pull requests from branches of this repo (whose authors
+      # can push here anyway). Pull requests from forks get none, so the
+      # script stops after what needs no tailnet.
       - run: bash scripts/e2e-incus.sh
         env:
-          TS_AUTHKEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.TS_AUTHKEY || '' }}
-          TS_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.TS_API_KEY || '' }}
+          TS_AUTHKEY: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && secrets.TS_AUTHKEY || '' }}
+          TS_API_KEY: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && secrets.TS_API_KEY || '' }}
           TS_TAG: ${{ vars.TS_TAG }}
