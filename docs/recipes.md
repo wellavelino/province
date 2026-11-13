@@ -103,6 +103,35 @@ go = "1.24"
 node = "22"
 ```
 
+## A database per env
+
+Each env is its own container, so a database a recipe installs belongs to that env alone: one per branch, gone on `env destroy`. This recipe installs PostgreSQL, makes your user a database role, and creates an empty `app` database:
+
+```yaml
+recipes:
+  web:
+    include: [base]
+    packages: [postgresql]
+    tools: { node: "22", pnpm: latest }
+    run:
+      - systemctl enable --now postgresql
+      - sudo -u postgres psql -tc "select 1 from pg_roles where rolname='$P_USER'" | grep -q 1 || sudo -u postgres createuser -s "$P_USER"
+      - sudo -u postgres psql -tc "select 1 from pg_database where datname='app'" | grep -q 1 || sudo -u postgres createdb -O "$P_USER" app
+```
+
+Each `run` line checks before it creates, so `env provision` can apply it again.
+
+Connect over the local socket as your user; no password is needed:
+
+```
+ssh dev@api 'psql postgresql:///app'
+DATABASE_URL=postgresql:///app
+```
+
+`postgresql://localhost/app` asks for a password, because Debian's PostgreSQL uses password auth over TCP. Use the socket URL; recipes must not carry passwords.
+
+The recipe gives you an empty database. Schema and seed data come from the project's own migrations, run in the env (`pnpm db:migrate`, for example), since province never runs setup from a project repo. Nothing copies production data into an env.
+
 ## Using other tools from a recipe
 
 Province doesn't need to know about the tool you prefer. Install it with `packages` or `run`, then call it from `run`.
