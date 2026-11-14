@@ -32,7 +32,7 @@ Run small, trusted commands (reading files, `git log`, formatting) where you are
 
 Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so `province env gc --yes` removes an env a crashed session forgot. Never pass `--protect` to a task env. Check with `province env create --help`; do not invent flags.
 
-Rely on `isolated: true` in the tasks host config (no LAN access, enforced on the host; Incus hosts only for now). `province env show "$name" --json` has `"isolated": true` for such an env. If it is missing, **stop**: the env can reach the LAN and the hosts on it, so run no untrusted code there. Destroy the env and ask the owner; run trusted work in it only with the owner's approval.
+Rely on `isolated: true` in the tasks host config (no LAN access, enforced on the host; Incus hosts only for now). That guarantee holds only if the Incus host does not hand the env a way into the LAN through its own tailnet connection: if the Incus host runs Tailscale, its tailnet grants must not reach LAN hosts (see `docs/incus.md`, "Isolated envs"); if you cannot tell, ask the owner before running untrusted code. `province env show "$name" --json` has `"isolated": true` for such an env. If it is missing, **stop**: the env can reach the LAN and the hosts on it, so run no untrusted code there. Destroy the env and ask the owner; run trusted work in it only with the owner's approval.
 
 ## The loop
 

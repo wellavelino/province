@@ -103,8 +103,10 @@ Its site config names that remote and project:
 
 ```yaml
 hosts:
-  - { name: tasks, backend: incus, remote: tasks-box, project: tasks }
+  - { name: tasks, backend: incus, remote: tasks-box, project: tasks, network: incusbr0, isolated: true }
 ```
+
+`isolated: true` keeps task envs off the LAN and needs `network` set to a managed bridge (here the default `incusbr0`), the nftables firewall driver and Incus 6.0.4 or later; `env create` refuses otherwise (see `docs/incus.md`, "Isolated envs"). The province-task-envs skill stops any task whose env is not isolated.
 
 For `TS_AUTHKEY`, the agent-host gets its own Tailscale auth key: reusable, ephemeral, pre-authorized, tagged for task envs only (for example `tag:task`), so the tailnet policy decides what task envs can reach. Never give it the owner's main key or `TS_API_KEY` with wide scope.
 
