@@ -44,7 +44,10 @@ type Fake struct {
 	Fail    func(call string) error
 	State   string           // returned by Status; Shutdown and Stop set "stopped", Start "running"
 	Avail   map[string]int64 // DfAvail by path
-	ExecOut string           // written to Exec's stdout
+	// Used is VolumeUsed by volid; a volid not in it fails, as a volume the
+	// real host cannot measure does.
+	Used    map[string]int64
+	ExecOut string // written to Exec's stdout
 	// ExecOuts, keyed by the space-joined argv, overrides ExecOut per command.
 	ExecOuts map[string]string
 
@@ -197,4 +200,15 @@ func toAny(ss []string) []any {
 
 func (f *Fake) Destroy(ctx context.Context, typ string, vmid int) error {
 	return f.record(ctx, "Destroy", typ, vmid)
+}
+
+func (f *Fake) VolumeUsed(ctx context.Context, volid string) (int64, error) {
+	if err := f.record(ctx, "VolumeUsed", volid); err != nil {
+		return 0, err
+	}
+	n, ok := f.Used[volid]
+	if !ok {
+		return 0, fmt.Errorf("%s: cannot measure %s", f.Name, volid)
+	}
+	return n, nil
 }
