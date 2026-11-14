@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -211,6 +212,13 @@ func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 // else (a directory, a remote path, a thick LV) is an error. The PVE API
 // reports no used figure for these volumes, so the host is asked.
 func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
+	// A linked clone (base-9000-disk-0/vm-200-disk-0, or a qcow2 overlay
+	// on its base) holds only its own changes, but the dump also carries
+	// the data it reads from the base.
+	_, name, _ := strings.Cut(volid, ":")
+	if parts := strings.Split(name, "/"); slices.ContainsFunc(parts[:len(parts)-1], func(p string) bool { return strings.HasPrefix(p, "base-") }) {
+		return 0, fmt.Errorf("%s is a linked clone: its used bytes leave out the base", volid)
+	}
 	var out bytes.Buffer
 	if err := h.run(ctx, &out, "pvesm", "path", volid); err != nil {
 		return 0, err
@@ -253,7 +261,10 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		return int64(math.Ceil(float64(size) * pct / 100)), nil
 	case strings.HasPrefix(path, "/"):
 		// Allocated blocks, not the apparent size: a sparse raw file or a
-		// preallocated qcow2 is as long as the whole disk.
+		// preallocated qcow2 is as long as the whole disk. On a compressing
+		// filesystem the blocks undercount the data, as zfs referenced
+		// would; the dump is compressed too, and the margin on top covers
+		// the difference.
 		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%F", "--", path); err != nil {
 			return 0, err
 		}

@@ -268,10 +268,9 @@ func (m *Mover) dumpEstimate(ctx context.Context, srcAPI proxmox.Client, p *plan
 			}
 			used += n
 		}
-		if len(unmeasured) == len(disks) {
-			return p.total, allocated
-		}
 	}
+	// With no disk measured, used is the allocated total and the cap below
+	// returns the allocated basis.
 	need := used + used/10 + 1<<30
 	if need >= p.total {
 		return p.total, allocated

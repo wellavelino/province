@@ -189,6 +189,8 @@ func TestVolumeUsed(t *testing.T) {
 		"path that is not local": {"iscsi:0.0.0.scsi-example", []step{
 			path("iscsi:0.0.0.scsi-example", "iscsi://192.0.2.10/iqn.2026-11.org.example:t/0"),
 		}, -1},
+		"thin linked clone":  {"local-lvm:base-9000-disk-0/vm-200-disk-0", nil, -1},
+		"qcow2 linked clone": {"local:9000/base-9000-disk-0.qcow2/200/vm-200-disk-0.qcow2", nil, -1},
 		"pvesm fails": {"gone:vm-200-disk-0", []step{
 			{remote("pvesm", "path"), runtest.Response{Code: 255, Stderr: "storage 'gone' does not exist"}},
 		}, -1},
@@ -207,9 +209,15 @@ func TestVolumeUsed(t *testing.T) {
 		case c.want >= 0 && (err != nil || n != c.want):
 			t.Errorf("%s: used = %d, %v; want %d", name, n, err, c.want)
 		}
-		// Each step ran once, in order; a prefix-only step matches any argv.
-		if got := f.Commands(); len(got) != len(want) {
-			t.Errorf("%s: commands = %q", name, got)
+		// Each step ran once, in order; a prefix-only step matches any
+		// argv that starts with it.
+		got := f.Commands()
+		ok := len(got) == len(want)
+		for i := 0; ok && i < len(got); i++ {
+			ok = strings.HasPrefix(got[i], want[i])
+		}
+		if !ok {
+			t.Errorf("%s: commands = %q\nwant %q", name, got, want)
 		}
 	}
 }
