@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wellavelino/province/internal/bootstrap"
 	"github.com/wellavelino/province/internal/config"
@@ -18,8 +19,11 @@ import (
 // CreateOpts are the env create flags. Zero sizes fall back to the
 // environment's recorded sizes, then to the site defaults.
 type CreateOpts struct {
-	Name   string
-	Host   string
+	Name string
+	Host string
+	// Kind is the guest kind, KindLXC or KindVM (Incus hosts only); empty
+	// keeps the recorded one, else lxc.
+	Kind   string
 	CPU    int
 	RAM    int
 	Disk   int
@@ -29,6 +33,10 @@ type CreateOpts struct {
 	// defaults.recipe; "none" applies none.
 	Recipe string
 	Apply  bool
+	// TTL > 0 records a time to live, counted from --apply (see startTTL);
+	// Protect marks the env protected. Neither clears what is recorded.
+	TTL     time.Duration
+	Protect bool
 }
 
 // CreateResult is the outcome of env create.
@@ -37,6 +45,7 @@ type CreateResult struct {
 	Host        string   `json:"host"`
 	Status      Status   `json:"status"`
 	Backend     string   `json:"backend"`
+	Kind        string   `json:"kind"`
 	VMID        int      `json:"vmid,omitempty"`
 	Instance    string   `json:"instance,omitempty"`
 	Recipe      *Recipe  `json:"recipe,omitempty"`
@@ -70,6 +79,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if o.CPU < 0 || o.RAM < 0 || o.Disk < 0 {
 		return nil, errs.Refusedf("--cpu, --ram and --disk must be positive")
 	}
+	if o.TTL < 0 {
+		return nil, errs.Refusedf("--ttl must be positive")
+	}
 	if o.Expose != 0 {
 		if err := validPort(o.Expose); err != nil {
 			return nil, err
@@ -82,6 +94,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		md = nil
 	case err != nil:
 		return nil, err
+	case o.Apply && md.TofuOutOfSync:
+		// The recorded guest moved but tofu still tracks the old one.
+		return nil, md.refuseOutOfSync("tofu apply")
 	case md.Status == StatusBootstrapped:
 		return nil, errs.Refusedf("env %s already exists on %s (%s); destroy it first", o.Name, md.Host, md.guestLabel())
 	}
@@ -94,6 +109,10 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		return nil, errs.Refusedf("env %s was planned on %s as a %s guest, but host %s is now configured with backend %s; destroy it first",
 			o.Name, md.Host, md.backend(), host.Name, host.BackendName())
 	}
+	kind, err := m.createKind(o, md, host)
+	if err != nil {
+		return nil, err
+	}
 	recorded := ""
 	if md != nil {
 		recorded = md.Recipe
@@ -103,9 +122,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		return nil, err
 	}
 	if md == nil {
-		md = &Metadata{Name: o.Name, Kind: "lxc", Status: StatusPlanned, CreatedAt: m.Now().UTC()}
+		md = &Metadata{Name: o.Name, Status: StatusPlanned, CreatedAt: m.Now().UTC()}
 	}
-	md.Backend = host.BackendName()
+	md.Backend, md.Kind = host.BackendName(), kind
 	if o.Recipe != "" {
 		md.Recipe = o.Recipe
 	} else if md.Recipe == "" && recipe != nil {
@@ -118,6 +137,8 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	md.Docker = o.Docker || md.Docker
 	md.ExposePort = pick(o.Expose, md.ExposePort)
 	md.Tun = m.Cfg.Tailscale.Tun
+	md.lifetime(o, m.Now())
+	md.Isolated = host.Isolated
 
 	b := m.backendFor(host)
 	if err := b.check(); err != nil {
@@ -148,7 +169,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := mkdirAll(dir); err != nil {
 		return nil, err
 	}
-	if err := m.writeMainTF(dir, md, host, p.VMID, keys); err != nil {
+	if err := m.writeMainTF(dir, md, host, p, keys); err != nil {
 		return nil, err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, ".gitignore"), []byte(".terraform/\n")); err != nil {
@@ -157,7 +178,7 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 	if err := m.writeMetadata(dir, md); err != nil {
 		return nil, err
 	}
-	res := &CreateResult{Name: o.Name, Host: host.Name, Backend: host.BackendName(), Dir: dir, VMID: p.VMID, Recipe: recipe,
+	res := &CreateResult{Name: o.Name, Host: host.Name, Backend: host.BackendName(), Kind: kind, Dir: dir, VMID: p.VMID, Recipe: recipe,
 		ExposePort: md.ExposePort, Warnings: append([]string{}, p.Warnings...)}
 
 	if err := tf.Init(ctx, dir); err != nil {
@@ -194,8 +215,8 @@ func (m *Manager) Create(ctx context.Context, o CreateOpts) (*CreateResult, erro
 		if werr := m.writeMetadata(dir, md); werr != nil {
 			err = errors.Join(err, werr)
 		}
-		return nil, fmt.Errorf("bootstrap of %s (%s on %s) failed: %w; the container and %s are kept: fix the cause and re-run `province env create %s --apply`",
-			o.Name, md.guestRef(host), host.Name, err, dir, o.Name)
+		return nil, fmt.Errorf("bootstrap of %s (%s on %s) failed: %w; the %s and %s are kept: fix the cause and re-run `province env create %s --apply`",
+			o.Name, md.guestRef(host), host.Name, err, md.guestNoun(), dir, o.Name)
 	}
 	md.Status, md.TailscaleIP, md.PublicURL = StatusBootstrapped, ip, ""
 	if w := m.recordDevice(ctx, md); w != "" {
@@ -256,6 +277,33 @@ func (m *Manager) recordDevice(ctx context.Context, md *Metadata) string {
 	return ""
 }
 
+// createKind picks env o.Name's guest kind: --kind, else the recorded
+// one, else lxc. A VM needs an Incus host and kernel tun in the guest.
+func (m *Manager) createKind(o CreateOpts, md *Metadata, h config.Host) (string, error) {
+	kind := o.Kind
+	switch {
+	case md != nil && kind != "" && kind != md.kind():
+		return "", errs.Refusedf("env %s was planned as a %s guest, not %s; destroy it first to change its kind", o.Name, md.kind(), kind)
+	case md != nil && kind == "":
+		kind = md.kind()
+	case kind == "":
+		kind = KindLXC
+	}
+	switch kind {
+	case KindLXC:
+	case KindVM:
+		if !h.IsIncus() {
+			return "", errs.Refusedf("--kind vm works on Incus hosts only; %s is a Proxmox host, where a VM needs a cloud-init template with qemu-guest-agent (planned): use --kind lxc there, or an Incus host", h.Name)
+		}
+		if m.Cfg.Tailscale.Tun == config.TunDevice {
+			return "", errs.Preflightf("tailscale.tun is device, which passes the host's /dev/net/tun into a container; env %s would be a VM, which has its own kernel and /dev/net/tun, so there is nothing to pass through: set tailscale.tun to userspace (the default) to create VMs", o.Name)
+		}
+	default:
+		return "", errs.Refusedf("--kind must be lxc or vm, got %q", kind)
+	}
+	return kind, nil
+}
+
 func (m *Manager) createHost(o CreateOpts, md *Metadata) (config.Host, error) {
 	name := o.Host
 	if md != nil {
@@ -278,6 +326,8 @@ func (m *Manager) createHost(o CreateOpts, md *Metadata) (config.Host, error) {
 }
 
 // readKeys returns the public key lines of every configured key file.
+// Every non-blank, non-comment line must be a public key line; an error
+// names the file and line but never quotes it (it may be a private key).
 func (m *Manager) readKeys() ([]string, error) {
 	var keys []string
 	for _, p := range m.Cfg.SSHPublicKeys {
@@ -285,10 +335,14 @@ func (m *Manager) readKeys() ([]string, error) {
 		if err != nil {
 			return nil, errs.Preflightf("ssh public key: %v", err)
 		}
-		for _, line := range strings.Split(string(b), "\n") {
-			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
-				keys = append(keys, line)
+		for n, line := range strings.Split(string(b), "\n") {
+			if line = strings.TrimSpace(line); line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			if err := config.CheckPublicKey(line); err != nil {
+				return nil, errs.Preflightf("ssh public key %s line %d: %v", p, n+1, err)
+			}
+			keys = append(keys, line)
 		}
 	}
 	if len(keys) == 0 {
@@ -298,7 +352,10 @@ func (m *Manager) readKeys() ([]string, error) {
 }
 
 // bootstrap applies what tofu could not set, then runs the bootstrap
-// script in the container. The auth key travels only on the script's stdin.
+// script in the container. The auth key travels only on the script's
+// stdin, and only to a guest that has not joined the tailnet yet: a re-run
+// on a joined guest (one whose bootstrap failed after `tailscale up`)
+// sends none.
 func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, keys []string) (string, error) {
 	b := m.backendFor(h)
 	if err := b.prepare(ctx, md); err != nil {
@@ -308,9 +365,19 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 	if err != nil {
 		return "", err
 	}
+	// No address (no tailscale yet, not logged in) or a failed exec, which
+	// the bootstrap itself will then report, means not joined: send the key.
+	var probe strings.Builder
+	joined := g.Exec(ctx, nil, &probe, bootstrap.ProbeArgv()...) == nil && bootstrap.Joined(probe.String())
+	authKey := m.Secrets.AuthKey
+	if joined {
+		m.logf("%s is already on the tailnet; not sending the auth key again", md.Name)
+		authKey = ""
+	}
 	payload, err := bootstrap.Payload(bootstrap.Params{
 		User: m.Cfg.User, Keys: keys, Hostname: md.Name, Tag: m.Cfg.Tailscale.Tag,
-		Tun: md.Tun, Docker: md.Docker, TSSSH: m.Cfg.Tailscale.SSHEnabled(), Locales: m.Cfg.GuestLocales, AuthKey: m.Secrets.AuthKey,
+		Tun: md.Tun, Docker: md.Docker, TSSSH: m.Cfg.Tailscale.SSHEnabled(), Locales: m.Cfg.GuestLocales,
+		AuthKey: authKey, Joined: joined,
 	})
 	if err != nil {
 		return "", err
@@ -323,9 +390,54 @@ func (m *Manager) bootstrap(ctx context.Context, h config.Host, md *Metadata, ke
 	return bootstrap.ParseResult(out.String())
 }
 
-// writeMainTF renders the env's tofu config for host and, on Proxmox, vmid.
-func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, vmid int, keys []string) error {
-	mainTF, err := m.backendFor(host).mainTF(md, keys, planned{VMID: vmid})
+// DefaultAgentTimeout is how long create waits, by default, for a new VM's
+// guest agent; agentPoll is the pause between tries.
+const (
+	DefaultAgentTimeout = 2 * time.Minute
+	agentPoll           = 2 * time.Second
+)
+
+// waitAgent runs `true` in g until it succeeds: a VM's agent, which every
+// exec goes through, answers some seconds after the VM boots. It gives up
+// after m.AgentTimeout with the last exec error.
+func (m *Manager) waitAgent(ctx context.Context, g guest, md *Metadata, h config.Host) error {
+	timeout := m.AgentTimeout
+	if timeout <= 0 {
+		timeout = DefaultAgentTimeout
+	}
+	sleep := m.Sleep
+	if sleep == nil {
+		sleep = sleepCtx
+	}
+	m.logf("waiting for the guest agent in %s (%s)", md.Name, md.guestRef(h))
+	for waited := time.Duration(0); ; waited += agentPoll {
+		err := g.Exec(ctx, nil, nil, "true")
+		if err == nil {
+			return nil
+		}
+		if waited >= timeout {
+			return fmt.Errorf("the guest agent in VM %s did not answer within %s (is it running? see `incus info %s:%s`): %w", md.Name, timeout, h.Remote, md.Name, err)
+		}
+		if err := sleep(ctx, agentPoll); err != nil {
+			return err
+		}
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// writeMainTF renders the env's tofu config for host from what plan decided.
+func (m *Manager) writeMainTF(dir string, md *Metadata, host config.Host, p planned, keys []string) error {
+	mainTF, err := m.backendFor(host).mainTF(md, keys, p)
 	if err != nil {
 		return err
 	}

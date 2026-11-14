@@ -34,15 +34,15 @@ func decodeOne(t *testing.T, stdout string, v any) {
 	}
 }
 
-func TestKindVMRefusedBeforeAnyIO(t *testing.T) {
+func TestBadKindRefusedBeforeAnyIO(t *testing.T) {
 	// No config, no secrets: the refusal must not need either.
-	o := runCLI(t, Deps{Getenv: noEnv}, "--json", "env", "create", "x", "--kind", "vm")
+	o := runCLI(t, Deps{Getenv: noEnv}, "--json", "env", "create", "x", "--kind", "bogus")
 	if o.code != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", o.code, o.stdout, o.stderr)
 	}
 	var doc map[string]string
 	decodeOne(t, o.stdout, &doc)
-	if doc["code"] != "refused" || !strings.Contains(doc["error"], "vm") {
+	if doc["code"] != "refused" || !strings.Contains(doc["error"], "bogus") {
 		t.Fatalf("error doc = %v", doc)
 	}
 	if len(doc) != 2 {
@@ -70,7 +70,7 @@ func TestUsageErrorsAreRefusedJSON(t *testing.T) {
 }
 
 func TestHumanErrorGoesToStderr(t *testing.T) {
-	o := runCLI(t, Deps{Getenv: noEnv}, "env", "create", "x", "--kind", "vm")
+	o := runCLI(t, Deps{Getenv: noEnv}, "env", "create", "x", "--kind", "bogus")
 	if o.code != 2 || o.stdout != "" || !strings.Contains(o.stderr, "province: ") {
 		t.Fatalf("got %+v", o)
 	}

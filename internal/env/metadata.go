@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wellavelino/province/internal/config"
+	"github.com/wellavelino/province/internal/errs"
 	"github.com/wellavelino/province/internal/hostops"
 	"github.com/wellavelino/province/internal/incus"
 	"github.com/wellavelino/province/internal/proxmox"
@@ -32,10 +34,16 @@ const (
 // MetadataFile is the per-environment record next to the tofu files.
 const MetadataFile = "province.json"
 
+// Guest kinds, as recorded in Metadata.Kind.
+const (
+	KindLXC = "lxc" // a system container (also when empty, as in old records)
+	KindVM  = "vm"  // a virtual machine (Incus only)
+)
+
 // Metadata is what province knows about an environment.
 type Metadata struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"`
+	Kind string `json:"kind"` // lxc or vm; see KindLXC, KindVM
 	// Backend of the env's host: proxmox (also when empty, as in records
 	// written before backends existed) or incus.
 	Backend     string `json:"backend,omitempty"`
@@ -60,12 +68,21 @@ type Metadata struct {
 	PublicURL  string `json:"public_url,omitempty"`
 	// Recipe is the recipe last chosen for the env ("none" for none).
 	Recipe string `json:"recipe,omitempty"`
+	// Isolated: the env cannot reach the LAN (its host had isolated: true
+	// when the env's tofu config was last written).
+	Isolated bool `json:"isolated,omitempty"`
 	// TofuOutOfSync: a move re-homed the guest but the tofu state could not
 	// be pointed at it; TofuFix are the steps that finish it by hand.
-	TofuOutOfSync bool      `json:"tofu_out_of_sync,omitempty"`
-	TofuFix       []string  `json:"tofu_fix,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	TofuOutOfSync bool     `json:"tofu_out_of_sync,omitempty"`
+	TofuFix       []string `json:"tofu_fix,omitempty"`
+	// TTL (a Go duration) is how long the env lives once its guest is
+	// created; ExpiresAt is then when `env gc --yes` may destroy it.
+	TTL       string    `json:"ttl,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Protected: env destroy and env gc refuse until `env protect --off`.
+	Protected bool      `json:"protected,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Tailnet finds and removes devices in the tailnet (Tailscale API). Only
@@ -94,8 +111,14 @@ type Manager struct {
 	// Incus returns the client of an Incus host.
 	Incus   func(config.Host) incus.Client
 	Tailnet Tailnet // nil when TS_API_KEY is not set
-	Now     func() time.Time
-	Log     io.Writer // progress and warnings (stderr)
+	// AgentTimeout bounds how long create waits for a new VM's guest agent
+	// to answer before bootstrapping it (default DefaultAgentTimeout).
+	AgentTimeout time.Duration
+	// Sleep pauses between tries while waiting; nil sleeps for real,
+	// returning early with ctx's error.
+	Sleep func(ctx context.Context, d time.Duration) error
+	Now   func() time.Time
+	Log   io.Writer // progress and warnings (stderr)
 }
 
 // backend returns the env's backend, proxmox for old records.
@@ -106,8 +129,38 @@ func (md *Metadata) backend() string {
 	return md.Backend
 }
 
+// kind returns the env's guest kind, lxc for records without one.
+func (md *Metadata) kind() string {
+	if md.Kind == "" {
+		return KindLXC
+	}
+	return md.Kind
+}
+
+// vm reports whether the env's guest is a virtual machine.
+func (md *Metadata) vm() bool { return md.kind() == KindVM }
+
+// guestNoun is "container" or "VM", for messages.
+func (md *Metadata) guestNoun() string {
+	if md.vm() {
+		return "VM"
+	}
+	return "container"
+}
+
 // created reports whether the env's guest was created (tofu apply ran).
 func (md *Metadata) created() bool { return md.VMID != 0 || md.Instance != "" }
+
+// refuseOutOfSync refuses op (destroy, tofu apply) on an env whose tofu
+// state still points at the guest it was moved from, with the steps that
+// finish the move; nil when the state is in sync.
+func (md *Metadata) refuseOutOfSync(op string) error {
+	if !md.TofuOutOfSync {
+		return nil
+	}
+	return errs.Refusedf("env %s was moved but its tofu state still points at the old guest, so %s could hit the wrong one; finish the move first:\n  %s",
+		md.Name, op, strings.Join(md.TofuFix, "\n  "))
+}
 
 // guestLabel names the env's guest without its host: "vmid 105" or
 // "instance api".

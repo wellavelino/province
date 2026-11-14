@@ -1,0 +1,56 @@
+{
+  "terraform": {
+    "required_providers": {
+      "incus": {
+        "source": "lxc/incus",
+        "version": "1.2.1"
+      }
+    }
+  },
+  "provider": {
+    "incus": {}
+  },
+  "resource": {
+    "incus_instance": {
+      "env": {
+        "name": "demo",
+        "description": "Managed by province (env demo)",
+        "remote": "box",
+        "project": "dev",
+        "image": "images:debian/13",
+        "type": "virtual-machine",
+        "running": true,
+        "config": {
+          "boot.autostart": "true",
+          "limits.cpu": "2",
+          "limits.memory": "2048MiB",
+          "user.province.env": "demo"
+        },
+        "device": [
+          {
+            "name": "root",
+            "type": "disk",
+            "properties": {
+              "path": "/",
+              "pool": "default",
+              "size": "16GiB"
+            }
+          },
+          {
+            "name": "eth0",
+            "type": "nic",
+            "properties": {
+              "name": "eth0",
+              "network": "incusbr0"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "output": {
+    "name": {
+      "value": "${incus_instance.env.name}"
+    }
+  }
+}

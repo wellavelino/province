@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/wellavelino/province/internal/errs"
 )
@@ -24,15 +23,17 @@ type DestroyResult struct {
 // before touching anything.
 func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyResult, error) {
 	if !yes {
-		return nil, errs.Refusedf("env destroy %s deletes the container and its disk: pass --yes", name)
+		return nil, errs.Refusedf("env destroy %s deletes its guest (container or VM) and disk: pass --yes", name)
 	}
 	md, err := m.load(name)
 	if err != nil {
 		return nil, err
 	}
-	if md.TofuOutOfSync {
-		return nil, errs.Refusedf("env %s was moved but its tofu state still points at the old guest, so destroy could hit the wrong one; finish the move first:\n  %s",
-			name, strings.Join(md.TofuFix, "\n  "))
+	if err := md.refuseProtected(); err != nil {
+		return nil, err
+	}
+	if err := md.refuseOutOfSync("destroy"); err != nil {
+		return nil, err
 	}
 	res := &DestroyResult{Name: name, Host: md.Host, VMID: md.VMID, Instance: md.Instance, Warnings: []string{}}
 	warn := func(format string, a ...any) {

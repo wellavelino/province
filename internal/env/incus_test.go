@@ -39,7 +39,7 @@ func TestIncusCreateApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := r.dir("api")
-	want := []string{"box HasStoragePool default", "tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "box Exec api bash -s"}
+	want := []string{"box HasStoragePool default", "tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "box Exec api sh -c tailscale ip -4 2>/dev/null || true", "box Exec api bash -s"}
 	if got := r.j.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -150,5 +150,84 @@ func TestIncusExistingEnvRefusalNamesTheInstance(t *testing.T) {
 	_, err := r.m.Create(ctx, CreateOpts{Name: "api", Apply: true})
 	if errs.KindOf(err) != errs.Refused || !strings.Contains(err.Error(), "already exists on box (instance api)") || strings.Contains(err.Error(), "vmid") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// isolate makes host box isolated on incusbr0, on a server that can
+// enforce it.
+func isolate(r *rig, f *incustest.Fake) {
+	h := &r.m.Cfg.Hosts[2]
+	h.Network, h.Isolated = "incusbr0", true
+	f.ServerInfo = incus.Server{Extensions: []string{"network_acl", incus.ExtBridgeACLDevices}, Firewall: "nftables"}
+	f.NetworkInfo = map[string]incus.Network{"incusbr0": {Name: "incusbr0", Type: "bridge", Managed: true,
+		Config: map[string]string{"ipv4.address": "10.148.12.1/24", "ipv6.address": "fd42:4c6f:2f3a:1b2c::1/64"}}}
+}
+
+func TestIncusIsolatedCreate(t *testing.T) {
+	r := newRig(t)
+	box := withIncus(t, r)
+	isolate(r, box)
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "api", Host: "box"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"box HasStoragePool default", "box HasNetwork incusbr0", "box Server", "box Network incusbr0"}
+	if got := box.Calls(); !slices.Equal(got, want) {
+		t.Fatalf("calls = %q, want %q", got, want)
+	}
+	if md := r.metadata(t, "api"); !md.Isolated {
+		t.Fatalf("metadata = %+v", md)
+	}
+	tf, _ := os.ReadFile(filepath.Join(r.dir("api"), "main.tf.json"))
+	for _, s := range []string{`"incus_network_acl"`, `"security.acls": "province-api"`, `"destination": "10.148.12.1,fd42:4c6f:2f3a:1b2c::1"`} {
+		if !strings.Contains(string(tf), s) {
+			t.Errorf("main.tf.json lacks %s:\n%s", s, tf)
+		}
+	}
+}
+
+func TestIncusIsolatedPreflight(t *testing.T) {
+	cases := map[string]struct {
+		change func(f *incustest.Fake)
+		name   string
+		want   string
+	}{
+		"old incus":    {func(f *incustest.Fake) { f.ServerInfo.Extensions = []string{"network_acl"} }, "api", "lacks API extension network_bridge_acl_devices"},
+		"xtables":      {func(f *incustest.Fake) { f.ServerInfo.Firewall = "xtables" }, "api", `"xtables" firewall driver`},
+		"not a bridge": {func(f *incustest.Fake) { f.NetworkInfo["incusbr0"] = incus.Network{Type: "macvlan", Managed: true} }, "api", "a macvlan network"},
+		"unmanaged":    {func(f *incustest.Fake) { f.NetworkInfo["incusbr0"] = incus.Network{Type: "bridge"} }, "api", "managed bridge"},
+		"no addresses": {func(f *incustest.Fake) {
+			n := f.NetworkInfo["incusbr0"]
+			n.Config = map[string]string{"ipv4.address": "none"}
+			f.NetworkInfo["incusbr0"] = n
+		}, "api", "no ipv4.address or ipv6.address"},
+		"bad address": {func(f *incustest.Fake) {
+			n := f.NetworkInfo["incusbr0"]
+			n.Config = map[string]string{"ipv4.address": "auto"}
+			f.NetworkInfo["incusbr0"] = n
+		}, "api", `ipv4.address "auto"`},
+		"long env name": {func(*incustest.Fake) {}, strings.Repeat("a", 55), "at most 54 characters"},
+	}
+	for name, c := range cases {
+		r := newRig(t)
+		box := withIncus(t, r)
+		isolate(r, box)
+		c.change(box)
+		_, err := r.m.Create(ctx, CreateOpts{Name: c.name, Host: "box"})
+		if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want a preflight error with %q", name, err, c.want)
+		}
+		if got := r.j.Entries(); slices.ContainsFunc(got, func(e string) bool { return strings.HasPrefix(e, "tofu") }) {
+			t.Errorf("%s: tofu ran after a failed preflight: %q", name, got)
+		}
+	}
+	// IPv6 only is enough.
+	r := newRig(t)
+	box := withIncus(t, r)
+	isolate(r, box)
+	n := box.NetworkInfo["incusbr0"]
+	n.Config = map[string]string{"ipv4.address": "none", "ipv6.address": "fd42:4c6f:2f3a:1b2c::1/64"}
+	box.NetworkInfo["incusbr0"] = n
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "api", Host: "box"}); err != nil {
+		t.Fatal(err)
 	}
 }

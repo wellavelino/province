@@ -10,7 +10,7 @@ Province does three things to one kind of object, the env:
 2. **Connect** it to your tailnet.
 3. **Configure** it with a recipe.
 
-Anything else belongs to the host platform (Proxmox, Incus) or to the user's recipe. A new feature has to fit one of the three, stay small, and work the same on every backend, or it does not go in.
+Anything else belongs to the host platform (Proxmox, Incus) or to the user's recipe. A new feature has to fit one of the three, stay small, and work the same on every backend, or it does not go in. VMs are the stated exception: `--kind vm` works on Incus first, and Proxmox follows (planned, below).
 
 ## 1. Prove what exists
 
@@ -19,7 +19,7 @@ Unit tests use fakes. These run the real thing.
 - [x] **Generated tofu configs against the real providers.** `scripts/tofu-validate.sh`, CI job `tofu-validate`.
 - [x] **Recipes in a real Debian 13 container.** `internal/bootstrap/recipe_container_test.go` (`-tags integration`), CI job `recipe-container`: real apt, mise and git, run twice; checks the package, the tool on `PATH` as sshd and a login shell see it, the dotfiles clone and `install.sh`, and the `run` command.
 - [x] **Plan against a real Incus.** `scripts/e2e-incus.sh`, CI job `incus`: the real `incus query` preflight and a real `tofu plan` on every push.
-- [ ] **Full lifecycle on a real Incus.** The same script goes on to create, bootstrap, recipe, show, provision and destroy when the repo has these Actions settings:
+- [x] **Full lifecycle on a real Incus.** First green run with the secrets: CI run 43383561228, attempt 2 (VM on KVM included). The same script, in CI on Incus 6.0 LTS from the [Zabbly](https://github.com/zabbly/incus) apt repo (key pinned by fingerprint; Ubuntu's own 6.0.0 cannot do `isolated`) with the nftables firewall driver. It uses two envs: an isolated container created with `--protect --ttl 1s`, and a `--kind vm` with `--ttl 1s` (a container instead, with a message, when the runner has no `/dev/kvm`). Without secrets it plans both (the real preflight, isolated checks included), runs `env list`, `show` and `env gc` on the plans, and checks that `env destroy` refuses the protected env (exit 2) until `env protect --off`. With the secrets it goes on to create, bootstrap, recipe, show, provision and destroy both; probes from inside the isolated env that the runner's own LAN address and the bridge gateway (on a non-DNS port) are unreachable while DNS and HTTPS to the internet work, with the VM as the control that reaches both; and checks that both envs show as expired, that `env gc` without `--yes` changes nothing and that `env gc --yes` destroys the VM and skips the protected env. Every env the run made is destroyed on exit, also on failure. The Tailscale secrets reach only the e2e step, and only on pushes to `main` and pull requests from branches of this repo; fork pull requests get none. Needs these Actions settings:
   - secret `TS_AUTHKEY`: a tagged Tailscale auth key used only for CI (reusable, ephemeral is fine);
   - secret `TS_API_KEY`: so destroy removes the tailnet node;
   - variable `TS_TAG`: the key's tag, if it is not `tag:dev`.
@@ -40,17 +40,17 @@ Confirmed (low):
 Cheap fixes for leads that need an outside fact to confirm:
 
 - [x] CI: set the Tailscale secrets on the e2e step only, run that job only on pushes to `main`, pin actions by commit SHA.
-- [ ] `env create --apply`: refuse an env marked `tofu_out_of_sync`.
+- [x] `env create --apply`: refuse an env marked `tofu_out_of_sync`.
 - [ ] Re-home after a move: validate the env name and use the directory that matched.
 - [ ] Print the MagicDNS name the node actually got, not the bare env name, in the `ssh` hint.
-- [ ] Escape `${` and `%{` in generated tofu strings; accept only real public-key lines from `ssh_public_keys`.
-- [ ] Put guest error text in its own `--json` field and tell agents in SKILL.md that it is data.
+- [x] Escape `${` and `%{` in generated tofu strings; accept only real public-key lines from `ssh_public_keys`.
+- [x] Put guest error text in its own `--json` field and tell agents in SKILL.md that it is data.
 
 Hardening:
 
-- [ ] Bootstrap: join the tailnet before installing Docker, then `unset TS_AUTHKEY`; don't resend the key once the node has joined.
+- [x] Bootstrap: join the tailnet before installing Docker, then `unset TS_AUTHKEY`; don't resend the key once the node has joined.
 - [x] `.gitignore`: `province.yaml`, `*.tfstate*`, `.terraform/`, `.env*`, before going public.
-- [ ] Add `govulncheck` to verify and CI.
+- [x] Add `govulncheck` to verify and CI.
 
 Not examined yet (second audit run): restoring a move archive from a guest that ran untrusted code; hosts with `insecure: true` while a guest shares their LAN.
 
@@ -62,24 +62,30 @@ Not examined yet (second audit run): restoring a move archive from a guest that 
 
 Today every env can reach the LAN it sits on, including the hosts themselves. An isolated env can reach the internet and the tailnet but not the LAN, enforced on the host so the env's own sudo user cannot undo it.
 
-- [ ] Proxmox: the guest firewall, declared in the tofu config.
-- [ ] Incus: a network ACL, declared in the tofu config.
+- [ ] Proxmox: the guest firewall, declared in the tofu config. Deferred (owner decision, 2026-11-13): envs use DHCP, so province does not know the gateway or DNS server to keep allowed; `isolated: true` on a Proxmox host is refused when the site config loads.
+- [x] Incus: a network ACL, declared in the tofu config (`isolated: true` on the host, see [docs/incus.md](incus.md#isolated-envs)).
 - [ ] Later, if needed: an allowlist of outbound hosts instead of "everything but the LAN".
 
 ## 4. Disposable and long-lived, as two flags
 
 Long-lived is already the default: an env stays until it is destroyed and starts with its host.
 
-- [ ] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
-- [ ] `--protect`: `env destroy` refuses until the flag is removed.
+- [x] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
+- [x] `--protect`: `env destroy` refuses until the flag is removed.
 
 Backups of long-lived envs stay with the platform (Proxmox backup jobs, `incus export`).
+
+## 5. VMs (`--kind vm`)
+
+A stronger wall than a container: the env has its own kernel.
+
+- [x] Incus: `type = "virtual-machine"` in the tofu config, the kind recorded with the env, a wait for the VM's agent before the bootstrap.
+- [ ] Proxmox: needs a cloud-init template with qemu-guest-agent. Until then `--kind vm` on a Proxmox host is refused.
 
 ## Not building, for now
 
 Each of these was considered and set aside. Reopen one only with a concrete need.
 
-- **VMs** (`--kind vm`). A stronger wall than a container, but a large change on both backends. `isolated` covers the likelier risk first.
 - **A credential proxy** that adds tokens to requests as they leave the env. Use short-lived, narrowly scoped tokens instead.
 - **Snapshots and `env reset`.** Recreating from a recipe takes minutes.
 - **More backends** (Docker, cloud VMs, NixOS hosts).

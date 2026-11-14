@@ -56,6 +56,7 @@ func TestCreatePreflightFailuresStopBeforeTofu(t *testing.T) {
 		"storage content":    {func(r *rig) { r.clients["pve1"].StorageLs[0].Content = []string{"images"} }, "rootdir"},
 		"api down":           {func(r *rig) { r.clients["pve1"].Err = errors.New("dial tcp: connection refused") }, "connection refused"},
 		"key file":           {func(r *rig) { r.m.Cfg.SSHPublicKeys = []string{"/nonexistent/id.pub"} }, "ssh public key"},
+		"private key":        {func(r *rig) { writeKeyFile(t, r, pubKey+"\n"+privKey) }, "line 2: this is a private key"},
 	}
 	for name, c := range cases {
 		r := newRig(t)
@@ -123,7 +124,7 @@ func TestCreateApplyOrderAndStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 bash -s"}
+	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s"}
 	if got := r.j.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -144,8 +145,8 @@ func TestCreateAuthKeyOnlyInBootstrapStdin(t *testing.T) {
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
 		t.Fatal(err)
 	}
-	stdins := r.hosts["pve1"].ExecStdins()
-	if len(stdins) != 1 || !strings.Contains(stdins[0], "TS_AUTHKEY="+authKey+"\n") {
+	stdins := r.hosts["pve1"].ExecStdins() // the joined probe, then the bootstrap
+	if len(stdins) != 2 || stdins[0] != "" || !strings.Contains(stdins[1], "TS_AUTHKEY="+authKey+"\n") {
 		t.Fatalf("auth key not on bootstrap stdin")
 	}
 	for _, e := range r.j.Entries() {
@@ -168,6 +169,44 @@ func TestCreateAuthKeyOnlyInBootstrapStdin(t *testing.T) {
 	}
 	if strings.Contains(r.log.String(), authKey) {
 		t.Fatal("auth key logged")
+	}
+}
+
+// A re-run on a guest that already joined the tailnet (its bootstrap
+// failed after tailscale up, say in the Docker install) does not send the
+// auth key again.
+func TestCreateRerunOnJoinedGuestSendsNoKey(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].ExecOuts = map[string]string{"sh -c tailscale ip -4 2>/dev/null || true": "100.64.0.7\n"}
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	stdins := r.hosts["pve1"].ExecStdins()
+	if len(stdins) != 2 || strings.Contains(stdins[1], authKey) || !strings.Contains(stdins[1], "\nTS_AUTHKEY=''\n") {
+		t.Fatalf("bootstrap stdin for a joined guest carries the auth key or no empty TS_AUTHKEY")
+	}
+	if !strings.Contains(r.log.String(), "already on the tailnet; not sending the auth key") {
+		t.Fatalf("log = %q", r.log.String())
+	}
+	if md := r.metadata(t, "demo"); md.Status != StatusBootstrapped || md.TailscaleIP != "100.64.0.7" {
+		t.Fatalf("metadata = %+v", md)
+	}
+}
+
+// A probe that fails (the guest could not run it) counts as not joined.
+func TestCreateFailedProbeSendsKey(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].Fail = func(call string) error {
+		if call == "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true" {
+			return errors.New("pct exec 105: exit status 255")
+		}
+		return nil
+	}
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	if stdins := r.hosts["pve1"].ExecStdins(); len(stdins) != 2 || !strings.Contains(stdins[1], "TS_AUTHKEY="+authKey+"\n") {
+		t.Fatal("auth key not sent after a failed probe")
 	}
 }
 
@@ -194,7 +233,7 @@ func TestCreateBootstrapFailureKeepsStateAndRerunRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := r.dir("demo")
-	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 bash -s"}
+	want := []string{"tofu Init " + dir, "tofu Apply " + dir, "tofu Output " + dir, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s"}
 	if got := r.j.Entries()[before:]; !slices.Equal(got, want) {
 		t.Fatalf("re-run calls = %v", got)
 	}
@@ -229,6 +268,35 @@ func TestCreateExistingBootstrappedRefused(t *testing.T) {
 	}
 }
 
+// A moved env whose tofu state still tracks the old guest: tofu apply would
+// act on the wrong one, so create --apply refuses before any call.
+func TestCreateApplyRefusesTofuOutOfSync(t *testing.T) {
+	r := newRig(t)
+	r.hosts["pve1"].ExecOut = "done?\n" // bootstrap fails: a re-run would apply again
+	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err == nil {
+		t.Fatal("no error")
+	}
+	md := r.metadata(t, "demo")
+	fix := []string{"cd " + r.dir("demo"), "tofu import proxmox_virtual_environment_container.env pve2/900"}
+	md.Host, md.Node, md.VMID, md.TofuOutOfSync, md.TofuFix = "pve2", "pve2", 900, true, fix
+	if err := r.m.writeMetadata(r.dir("demo"), md); err != nil {
+		t.Fatal(err)
+	}
+	r.hosts["pve1"].ExecOut = "PROVINCE_TS_IP=100.64.0.7\n"
+	before, api, tofus := r.mutations(), r.apiCalls(), len(r.tofuHosts)
+	_, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true})
+	if errs.KindOf(err) != errs.Refused || errs.ExitCode(err) != 2 ||
+		!strings.Contains(err.Error(), "tofu state still points at the old guest") || !strings.Contains(err.Error(), "\n  "+fix[1]) {
+		t.Fatalf("err = %v", err)
+	}
+	if r.mutations() != before || r.apiCalls() != api || len(r.tofuHosts) != tofus {
+		t.Fatalf("calls after refusal: %v", r.j.Entries()[before:])
+	}
+	if got := r.metadata(t, "demo"); !got.TofuOutOfSync || got.VMID != 900 {
+		t.Fatalf("metadata changed: %+v", got)
+	}
+}
+
 func TestCreateOtherHostForExistingEnvRefused(t *testing.T) {
 	r := newRig(t)
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo"}); err != nil {
@@ -257,11 +325,11 @@ func TestCreateHostPreparationBeforeBootstrap(t *testing.T) {
 		if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true, Docker: c.docker}); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		want := append(c.want, "pve1 Exec 105 bash -s")
+		want := append(c.want, "pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s")
 		if got := r.hosts["pve1"].Calls(); !slices.Equal(got, want) {
 			t.Errorf("%s: host calls = %v, want %v", name, got, want)
 		}
-		stdin := r.hosts["pve1"].ExecStdins()[0]
+		stdin := r.hosts["pve1"].ExecStdins()[1]
 		if !strings.Contains(stdin, "P_TUN="+c.tun+"\n") {
 			t.Errorf("%s: payload tun wrong", name)
 		}
@@ -323,7 +391,7 @@ func TestCreateTailscaleSSHOffReachesPayload(t *testing.T) {
 	if _, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true}); err != nil {
 		t.Fatal(err)
 	}
-	if stdin := r.hosts["pve1"].ExecStdins()[0]; !strings.Contains(stdin, "P_TS_SSH=0\n") {
+	if stdin := r.hosts["pve1"].ExecStdins()[1]; !strings.Contains(stdin, "P_TS_SSH=0\n") {
 		t.Fatal("payload does not turn Tailscale SSH off")
 	}
 }
@@ -392,5 +460,36 @@ func TestCreateKeepsTheVMIDOfACreatedEnv(t *testing.T) {
 	tf, _ := os.ReadFile(filepath.Join(r.dir("demo"), "main.tf.json"))
 	if !strings.Contains(string(tf), `"vm_id": 105,`) {
 		t.Fatal("re-run changed the vm_id of an existing container")
+	}
+}
+
+// privKey is a made-up private key file (not a real key).
+const privKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----\n"
+
+func writeKeyFile(t *testing.T, r *rig, body string) {
+	t.Helper()
+	if err := os.WriteFile(r.m.Cfg.SSHPublicKeys[0], []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateRejectsBadKeyLinesWithoutEchoingThem(t *testing.T) {
+	for name, body := range map[string]string{
+		"private key":  privKey,
+		"bad base64":   "ssh-ed25519 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ! dev\n",
+		"unknown type": "ssh-dss b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAA dev\n",
+	} {
+		r := newRig(t)
+		writeKeyFile(t, r, body)
+		_, err := r.m.Create(ctx, CreateOpts{Name: "demo", Apply: true})
+		if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "line 1") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ") {
+			t.Errorf("%s: error echoes the key material: %v", name, err)
+		}
+		if r.mutations() != 0 {
+			t.Errorf("%s: mutations after rejected key: %v", name, r.j.Entries())
+		}
 	}
 }

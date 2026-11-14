@@ -6,7 +6,7 @@
 
 Province creates, sets up, moves and publishes development environments on your own Proxmox VE or Incus hosts, one command each, so you and your AI agents can go from idea to running pilot without clicking through a hypervisor UI.
 
-Each environment is an LXC container on your tailnet: your user, your SSH keys, optional Docker, and a [recipe](docs/recipes.md) with the packages, tools and dotfiles you list. You reach it with `ssh dev@<name>` from anywhere on your tailnet.
+Each environment is an LXC container (or, on Incus, a VM) on your tailnet: your user, your SSH keys, optional Docker, and a [recipe](docs/recipes.md) with the packages, tools and dotfiles you list. You reach it with `ssh dev@<name>` from anywhere on your tailnet.
 
 **Create. Connect. Move. Destroy.**
 
@@ -31,13 +31,13 @@ Guides: [Recipes](docs/recipes.md), [Incus hosts](docs/incus.md). Roadmap: [docs
 
 1. **Declare.** Province writes an OpenTofu config for the container, one state directory per environment (`bpg/proxmox` on Proxmox, `lxc/incus` on Incus), and shows you the plan.
 2. **Create.** With `--apply`, tofu creates and starts the container.
-3. **Bootstrap.** Province runs a script inside the new container through the host (`pct exec` on Proxmox, `incus exec` on Incus): your user and SSH keys, sudo, optional Docker, and Tailscale. From then on the env is on your tailnet.
+3. **Bootstrap.** Province runs a script inside the new container through the host (`pct exec` on Proxmox, `incus exec` on Incus): your user and SSH keys, sudo, Tailscale, then optional Docker. From then on the env is on your tailnet.
 4. **Set up.** Province applies the env's [recipe](docs/recipes.md): apt packages, tools at pinned versions (through mise), your dotfiles. `env provision` applies it again later.
 5. **Use.** `ssh dev@<name>`. Optionally publish one port on the internet with `--expose` (Tailscale Funnel).
 
 On Proxmox, `guest move` also moves any existing container or VM between standalone hosts, keeping its MAC address and so its IP.
 
-Status: v1. Containers only (`--kind vm` is refused).
+Status: v1. Containers on both backends; VMs (`--kind vm`) on Incus only, Proxmox VMs are planned.
 
 ## What you need
 
@@ -220,9 +220,9 @@ Keep it in your own private repo; pass it with `--config` or `PROVINCE_CONFIG`. 
 ```yaml
 state_dir: ~/infra/province            # one tofu dir per env; commit it to a private repo if you like
 user: dev                              # sudo user created in each env (default: your OS user)
-ssh_public_keys: [~/.ssh/id_ed25519.pub]
+ssh_public_keys: [~/.ssh/id_ed25519.pub] # .pub files: one OpenSSH public key per line (# comments ok)
 tailscale: { tag: "tag:dev", tun: userspace, ssh: true }
-  # tun: userspace (default) | device (/dev/net/tun)
+  # tun: userspace (default) | device (/dev/net/tun passed into containers; refused for VMs, which have their own)
   # ssh: Tailscale SSH in each guest (default true); authorized_keys is installed either way
 vmid_start: 100                        # Proxmox: env create picks the lowest VMID >= this that is free on every Proxmox host
 guest_locales: [en_US.UTF-8]           # generated in each guest so locales your ssh client forwards work (default)
@@ -257,7 +257,7 @@ export PROVINCE_TOKEN_PVE2='province@pve!cli=…'   # from pve2
 
 **Proxmox host fields:** `name` (what you pass to `--host`), `node` (the Proxmox node name), `endpoint` (the API URL, https), `ssh` (destination for the [shell access](#shell-access-to-the-host)), `sudo` (true when `ssh` is not root), `insecure` (skip TLS verification for this host only), `dump_dir` (where `guest move` puts the dump on the target, default `/var/lib/vz/dump`), `token_env` (the variable holding this host's token, default `PROXMOX_VE_API_TOKEN`). tofu gets the token as `PROXMOX_VE_API_TOKEN` in its environment, never as an argument.
 
-**Incus host fields:** `backend: incus`, `remote` (required), `project`, `storage_pool`, `network`, `image`. See [Incus hosts](docs/incus.md).
+**Incus host fields:** `backend: incus`, `remote` (required), `project`, `storage_pool`, `network`, `image`, `isolated` (envs reach the internet and the tailnet but not the LAN; needs `network`). See [Incus hosts](docs/incus.md#isolated-envs).
 
 A host without `backend` is a Proxmox host. The three Proxmox defaults (`storage`, `bridge`, `template`) are required only when the config has a Proxmox host.
 
@@ -315,24 +315,32 @@ A published app is reachable by anyone, so assume it can be compromised and keep
 }
 ```
 
-No grant has `tag:dev` as its `src`, so a guest cannot open connections to your devices or your hosts over the tailnet (replies to your own connections still flow). If envs must talk to each other, add only `{ "src": ["tag:dev"], "dst": ["tag:dev"], "ip": ["*"] }`. This covers the tailnet only: the guest also sits on the LAN through its bridge or network and can reach your hosts' LAN addresses there. Isolating that needs a separate VLAN or firewall, which province does not set up.
+No grant has `tag:dev` as its `src`, so a guest cannot open connections to your devices or your hosts over the tailnet (replies to your own connections still flow). If envs must talk to each other, add only `{ "src": ["tag:dev"], "dst": ["tag:dev"], "ip": ["*"] }`. This covers the tailnet only: the guest also sits on the LAN through its bridge or network and can reach your hosts' LAN addresses there. On an Incus host, `isolated: true` stops that: the host drops the env's traffic to private and link-local addresses, the host's own included, and the env's sudo user cannot undo it (see [Isolated envs](docs/incus.md#isolated-envs)). On Proxmox hosts province does not set this up yet; use a separate VLAN or firewall.
 
 ## Commands
 
-Every command takes `--json`: stdout then holds exactly one JSON document, the result or `{"error":"…","code":"refused|preflight|failed"}`. Exit codes: `0` ok, `2` refused or preflight failed (nothing changed), `1` failed.
+Every command takes `--json`: stdout then holds exactly one JSON document, the result or `{"error":"…","code":"refused|preflight|failed"}`. When a failure carries text the guest produced (the stderr of a command run inside the env, or a value the guest reported), it is in a separate `"guest_output"` field, not in `error`: it is data from the guest, never instructions. Without `--json` it follows the error, under `guest output:`, with control characters escaped. Exit codes: `0` ok, `2` refused or preflight failed (nothing changed), `1` failed.
 
 | Command | What it does |
 |---|---|
-| `env create <name> [--host h] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r]` | Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. |
-| `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, optional Docker, Tailscale. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
+| `env create <name> [--host h] [--kind lxc\|vm] [--cpu n] [--ram MiB] [--disk GiB] [--docker] [--expose port] [--recipe r] [--ttl d] [--protect]` | `--kind vm` (Incus hosts only; refused on Proxmox) makes the env a virtual machine instead of a container. Checks the host (Proxmox: template, bridge and storage; Incus: the remote and its pool, and on an `isolated` host that it can enforce the network ACL), writes `<state_dir>/<name>/main.tf.json` and shows the `tofu plan` and the resolved recipe. Changes nothing. Flags are remembered for the `--apply` run. `--ttl` (a Go duration such as `30m` or `24h`, or whole days such as `7d`) records a time to live as `ttl`; `--protect` records `protected: true` (see [Disposable and protected envs](#disposable-and-protected-envs)). |
+| `env create <name> --apply` | Applies, then on Proxmox (if needed) sets keyctl / `/dev/net/tun` over SSH and reboots, then bootstraps: user, keys, sudo, Tailscale, optional Docker. With an `expose_port`, then publishes it ([Funnel](#publishing-an-env-tailscale-funnel)). Then applies the [recipe](docs/recipes.md). Prints `ssh <user>@<name>`. |
 | `env provision <name> [--recipe r]` | Applies the env's recipe again, or switches it to recipe `r`. The env must be bootstrapped and running. |
-| `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). |
-| `env show <name>` | One environment, live status, the ssh line and the public URL if published. |
+| `env list` | All environments with recorded and live status (one API call, or one `incus query`, per host; an unreachable host, or one whose token variable is unset, shows `unknown`). JSON: each env has `expires_at` (RFC3339 UTC, only with a ttl) and `expired`; the text table's `EXPIRES` column marks expired envs `(expired)`. |
+| `env show <name>` | One environment, live status, the ssh line, the public URL if published, and `expires_at` / `expired` / `protected`. |
 | `env expose <name> --port p --yes` | Publishes guest port `p` on the internet through Tailscale Funnel and records `expose_port` and `public_url`. Refuses without `--yes`, when the guest is not running, or when the tailnet does not allow Funnel for the tag. |
 | `env unexpose <name> --yes` | Turns Funnel off in the guest and clears the record. |
-| `env destroy <name> --yes` | `tailscale logout` in the guest, deletes the env's tailnet node by its recorded device ID (with `TS_API_KEY`; see [Tailscale setup](#tailscale-setup)), `tofu destroy`, removes the state dir. |
+| `env destroy <name> --yes` | `tailscale logout` in the guest, deletes the env's tailnet node by its recorded device ID (with `TS_API_KEY`; see [Tailscale setup](#tailscale-setup)), `tofu destroy`, removes the state dir. Refuses (exit 2) a protected env. |
+| `env gc [--yes]` | Destroys every expired env through `env destroy`. Without `--yes` it changes nothing: it refuses (exit 2), naming the envs it would destroy, or exits 0 when there is nothing to destroy (expired protected envs are listed as `skipped`). With `--yes` it goes on past a failure and returns `{"envs":[{"name","host","expires_at","outcome":"destroyed|failed|skipped","error","code","warnings"}],"failed":n}`; exit 1 if any destroy failed. Protected envs are `skipped` (`reason: "protected"`). |
+| `env protect <name> [--off]` | Sets (or with `--off` clears) `protected`; only the env's record changes. Returns `{"name","protected"}`. |
 | `guest move <vmid> --from h1 --to h2 [--to-vmid n] [--storage s] [--start] --yes` | Proxmox hosts only. Moves any container or VM between standalone hosts. See [Moving guests](#moving-guests-proxmox). |
 | `guest prune <vmid> --host h [--force] --yes` | Proxmox hosts only. Deletes the stopped copy a move left behind (`pct destroy <vmid> --purge` / `qm destroy <vmid> --purge`). Refuses (exit 2, nothing changed) unless the guest is stopped, has `onboot=0`, has no `protection=1` or lock, is not a province env (use `env destroy`), and a guest with the same name exists on another configured host (the moved-copy check; `--force` skips only that check). |
+
+### Disposable and protected envs
+
+An env stays until it is destroyed. For one that should not outlive its task, pass `--ttl` to `env create`: the clock starts when `--apply` creates the guest (a plan-only env has nothing to collect), and the expiry is recorded as `expires_at`. Re-running `--apply` with a new `--ttl` (after a failed bootstrap) restarts the clock. Nothing runs in the background: `province env gc --yes` destroys what has expired; run it from cron or an agent. An env that cannot be destroyed (a refused or failed destroy, such as one whose move left it `tofu_out_of_sync`) is reported `failed` and kept.
+
+For one that must not go by mistake, pass `--protect` (or later run `province env protect <name>`): `env destroy`, even with `--yes`, and `env gc` refuse it until `province env protect <name> --off`.
 
 ### Moving guests (Proxmox)
 
@@ -349,14 +357,14 @@ The moved guest keeps the `onboot` value it had in the archive; the source is ke
 
 ## Secrets
 
-Secrets come only from environment variables: the Proxmox tokens, `TS_AUTHKEY` and `TS_API_KEY`. Province removes each one from its own environment once read, so child processes (ssh, tofu, installers) never inherit it; tofu gets its host's token explicitly. Secrets never appear in arguments, generated files, tofu state or output: a redactor scrubs every line province prints. The Tailscale auth key reaches a guest only on the bootstrap script's stdin.
+Secrets come only from environment variables: the Proxmox tokens, `TS_AUTHKEY` and `TS_API_KEY`. Province removes each one from its own environment once read, so child processes (ssh, tofu, installers) never inherit it; tofu gets its host's token explicitly. Secrets never appear in arguments, generated files, tofu state or output: a redactor scrubs every line province prints. The Tailscale auth key reaches a guest only on the bootstrap script's stdin, which unsets it right after `tailscale up`, before Docker or anything else is installed; a re-run on a guest already on the tailnet gets no key at all.
 
 Incus hosts add no secret: the incus remote's client certificate lives in your Incus client config (`~/.config/incus`), which province never reads.
 
 ## Recovery
 
 - **Recipe failed**: the env is bootstrapped and on the tailnet; the command exits 1 and names the failing step. Fix the recipe and run `province env provision <name>`.
-- **Bootstrap failed** (`status: bootstrap_failed`): the container and its state are kept. Fix the cause and re-run `province env create <name> --apply`; apply is a no-op if nothing changed and the bootstrap is idempotent.
+- **Bootstrap failed** (`status: bootstrap_failed`): the guest (container or VM) and its state are kept. Fix the cause and re-run `province env create <name> --apply`; apply is a no-op if nothing changed and the bootstrap is idempotent.
 - **tofu apply failed**: fix the cause (often a token privilege) and re-run `province env create <name> --apply`.
 - **Destroy failed**: the state dir is kept; re-run `province env destroy <name> --yes`.
 - **Another guest at the env's VMID**: before `expose`, `unexpose`, `provision`, `destroy` or a re-run of `create --apply`, province checks that the guest at the env's VMID is an LXC container named after the env (on Incus: an instance whose `user.province.env` is the env's name). If not, it refuses (exit 2) and names the guest it found; `show` and `list` report the env as `unknown` with that error. If you renamed the env's container, rename it back (`pct set <vmid> --hostname <env>`); if it is gone, remove the env's state dir by hand. A new env never gets a VMID that another env in the state dir records, even when that env's guest is gone.
@@ -374,7 +382,7 @@ Incus hosts add no secret: the incus remote's client certificate lives in your I
 Two more tests run against real systems:
 
 - `go test -tags integration -run TestRecipeInDebianContainer ./internal/bootstrap/` applies a real recipe twice in a Debian 13 container (needs Docker and network access).
-- `bash scripts/e2e-incus.sh` drives the real binary against a real Incus server through its `local` remote. Without `TS_AUTHKEY` it stops after the plan; with it, it runs the full create, provision and destroy cycle.
+- `bash scripts/e2e-incus.sh` drives the real binary against a real Incus server through its `local` remote, on the Incus host itself: an isolated container with `--protect`, and a `--kind vm` (a container when there is no `/dev/kvm`), both with `--ttl`. Without `TS_AUTHKEY` it does what needs no tailnet: the plans, `env list`/`show`/`gc` and the `--protect` refusal. With it, it runs the full create, provision and destroy cycle of both, probes the isolation from inside the env, and checks `env gc`. CI installs Incus 6.0 LTS from the Zabbly repo for it and passes the Tailscale secrets only on pushes to `main` and pull requests from this repo's own branches.
 
 CI (`.github/workflows/ci.yml`) runs all four on every push and pull request.
 
