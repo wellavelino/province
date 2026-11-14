@@ -14,26 +14,26 @@ go test -tags bench -run TestBenchContainerSpinup -v -timeout 60m ./internal/boo
 | phase | what is timed |
 |---|---|
 | start | start the container until `bash` answers and DNS resolves |
-| base packages | `apt-get update`, then `curl ca-certificates sudo git` and the user: what the bootstrap installs before a recipe |
-| recipe (1st) | the real recipe script: `jq` from apt, Go 1.24 through mise, a dotfiles clone, a `run` command |
+| base packages | `apt-get update`, `curl ca-certificates sudo openssh-server` (the package step of the bootstrap) and the user. The tailnet join and the sshd start are left out: they need a key and an init system |
+| recipe (1st) | the real recipe script on a fresh env: git and `jq` from apt, Go 1.24 through mise, a `run` command. No dotfiles |
 | recipe (2nd) | the same recipe again, as `env provision` does; everything is already in place |
 | destroy | `rm -f` |
 
-The image pull is timed once, outside the runs. Base packages and the first recipe run are almost all network time (apt mirrors, the Go download), so they depend on the connection more than on the runtime.
+The image pull is timed once, outside the runs, and is labelled cold or cached (the bench never deletes an image to force a cold pull). Base packages and the first recipe run are almost all network time (apt mirrors, the Go download), so they depend on the connection more than on the runtime.
 
 ## Results
 
 ### Docker 29.8.2, Linux amd64 (WSL2), 16 CPUs, 5 runs, 2026-11-14
 
-Image pull: 3.13 s (once).
+Image pull: 0.85 s, image already local (registry check only).
 
 | phase | median | min | max |
 |---|---|---|---|
-| start | 0.42 s | 0.41 s | 0.85 s |
-| base packages | 10.27 s | 10.10 s | 10.42 s |
-| recipe (1st) | 8.92 s | 8.37 s | 11.36 s |
-| recipe (2nd) | 0.18 s | 0.17 s | 0.18 s |
-| destroy | 1.45 s | 1.04 s | 2.40 s |
-| total | 21.11 s | 20.63 s | 25.07 s |
+| start | 0.39 s | 0.37 s | 0.40 s |
+| base packages | 12.04 s | 11.72 s | 12.29 s |
+| recipe (1st) | 7.61 s | 7.51 s | 9.37 s |
+| recipe (2nd) | 0.15 s | 0.15 s | 0.16 s |
+| destroy | 1.27 s | 1.06 s | 1.28 s |
+| total | 21.48 s | 21.06 s | 23.44 s |
 
 Not measured yet: Apple `container` (needs macOS), Incus (needs an Incus host), and the full province path on Incus or Proxmox (needs a host and a Tailscale key).

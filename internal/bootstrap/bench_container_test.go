@@ -49,16 +49,21 @@ func TestBenchContainerSpinup(t *testing.T) {
 	payload, err := RecipePayload(RecipeParams{User: "dev", Hostname: "bench", Recipe: config.Recipe{
 		Packages: []string{"jq"},
 		Tools:    map[string]string{"go": "1.24"},
-		Dotfiles: "file:///home/dev/dotfiles-src",
 		Run:      []string{`echo "$P_USER@$P_HOSTNAME" > /root/recipe-ran`},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The image pull is timed once and kept out of the runs: it is a cold
-	// cache cost, paid once per host, not per env.
-	pull := timed(t, rt.bin, "pull", rt.pull())
+	// The image pull is timed once and kept out of the runs: it is paid
+	// once per host, not per env. It is only a cold pull when the image
+	// was not already local; the output says which.
+	cached := exec.Command(rt.bin, rt.inspect...).Run() == nil
+	pull := timed(t, rt.bin, "pull", rt.pullArg)
+	pullKind := "cold"
+	if cached {
+		pullKind = "image already local, so a registry check only"
+	}
 
 	phases := []string{"start", "base packages", "recipe (1st)", "recipe (2nd)", "destroy", "total"}
 	results := map[string][]time.Duration{}
@@ -84,7 +89,7 @@ func TestBenchContainerSpinup(t *testing.T) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nruntime: %s (%s), %s/%s, %d CPUs, %d runs\n", rtName,
 		strings.TrimSpace(firstLine(string(ver))), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runs)
-	fmt.Fprintf(&b, "image pull (once, outside the runs): %s\n\n", round(pull))
+	fmt.Fprintf(&b, "image pull (once, outside the runs): %s (%s)\n\n", round(pull), pullKind)
 	fmt.Fprintf(&b, "| phase | median | min | max |\n|---|---|---|---|\n")
 	for _, p := range phases {
 		s := slices.Clone(results[p])
@@ -94,20 +99,15 @@ func TestBenchContainerSpinup(t *testing.T) {
 	fmt.Print(b.String())
 }
 
-// basePackages is what the bootstrap leaves behind that a recipe relies on
-// (the base packages and the user), plus a local dotfiles repo to clone.
+// basePackages is the package step of bootstrap.sh's install_base plus
+// the user a recipe runs as. The tailnet join and sshd start are left out:
+// they need a key and an init system. The recipe gets no dotfiles, so it
+// installs git itself, as it would on a fresh env.
 const basePackages = `set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q curl ca-certificates sudo git
+apt-get install -y -q curl ca-certificates sudo openssh-server
 useradd -m -s /bin/bash dev
-sudo -u dev -H bash -euc '
-  mkdir "$HOME/dotfiles-src" && cd "$HOME/dotfiles-src"
-  git init -q -b main
-  printf "%s\n" "#!/bin/sh" "true" > install.sh
-  git add install.sh
-  git -c user.name=bench -c user.email=bench@example.com commit -qm init
-'
 `
 
 // ready succeeds once the container has a shell and working DNS, which
@@ -117,51 +117,49 @@ const ready = `getent hosts deb.debian.org >/dev/null`
 type containerRuntime struct {
 	bin     string
 	version []string
+	inspect []string // succeeds when the image is already local
 	pullArg []string
-	startFn func(name string) []string
-	execFn  func(name string) []string
-	rmFn    func(name string) []string
+	start   func(name string) []string
+	exec    func(name string) []string
+	rm      func(name string) []string
 }
-
-func (r containerRuntime) pull() []string             { return r.pullArg }
-func (r containerRuntime) start(name string) []string { return r.startFn(name) }
-func (r containerRuntime) exec(name string) []string  { return r.execFn(name) }
-func (r containerRuntime) rm(name string) []string    { return r.rmFn(name) }
 
 func ociRuntime(bin, image string) containerRuntime {
 	return containerRuntime{
 		bin:     bin,
 		version: []string{"--version"},
+		inspect: []string{"image", "inspect", image},
 		pullArg: []string{"pull", image},
-		startFn: func(n string) []string { return []string{"run", "-d", "--name", n, image, "sleep", "infinity"} },
-		execFn:  func(n string) []string { return []string{"exec", "-i", n, "bash", "-s"} },
-		rmFn:    func(n string) []string { return []string{"rm", "-f", n} },
+		start:   func(n string) []string { return []string{"run", "-d", "--name", n, image, "sleep", "infinity"} },
+		exec:    func(n string) []string { return []string{"exec", "-i", n, "bash", "-s"} },
+		rm:      func(n string) []string { return []string{"rm", "-f", n} },
 	}
 }
 
 // Only docker has been run. The others follow each tool's documented CLI
 // and are untested.
 var runtimes = map[string]containerRuntime{
-	"docker": ociRuntime("docker", "debian:13"),
-	"podman": ociRuntime("podman", "docker.io/library/debian:13"),
-	"container": {
-		bin:     "container",
-		version: []string{"--version"},
-		pullArg: []string{"image", "pull", "docker.io/library/debian:13"},
-		startFn: func(n string) []string {
-			return []string{"run", "-d", "--name", n, "docker.io/library/debian:13", "sleep", "infinity"}
-		},
-		execFn: func(n string) []string { return []string{"exec", "-i", n, "bash", "-s"} },
-		rmFn:   func(n string) []string { return []string{"delete", "--force", n} },
-	},
+	"docker":    ociRuntime("docker", "debian:13"),
+	"podman":    ociRuntime("podman", "docker.io/library/debian:13"),
+	"container": appleContainer(),
 	"incus": {
 		bin:     "incus",
 		version: []string{"version"},
+		inspect: []string{"image", "info", "province-bench-debian13"},
 		pullArg: []string{"image", "copy", "images:debian/13", "local:", "--alias", "province-bench-debian13"},
-		startFn: func(n string) []string { return []string{"launch", "province-bench-debian13", n} },
-		execFn:  func(n string) []string { return []string{"exec", n, "--", "bash", "-s"} },
-		rmFn:    func(n string) []string { return []string{"delete", "-f", n} },
+		start:   func(n string) []string { return []string{"launch", "province-bench-debian13", n} },
+		exec:    func(n string) []string { return []string{"exec", n, "--", "bash", "-s"} },
+		rm:      func(n string) []string { return []string{"delete", "-f", n} },
 	},
+}
+
+// appleContainer is Apple's container CLI: OCI-like, but images and
+// deletion live under their own subcommands.
+func appleContainer() containerRuntime {
+	r := ociRuntime("container", "docker.io/library/debian:13")
+	r.pullArg = []string{"image", "pull", "docker.io/library/debian:13"}
+	r.rm = func(n string) []string { return []string{"delete", "--force", n} }
+	return r
 }
 
 // startAndWait starts the container and waits, up to 2 minutes, until it
@@ -175,11 +173,12 @@ func startAndWait(t *testing.T, rt containerRuntime, name string) time.Duration 
 	for {
 		cmd := exec.Command(rt.bin, rt.exec(name)...)
 		cmd.Stdin = strings.NewReader(ready)
-		if cmd.Run() == nil {
+		out, err := cmd.CombinedOutput()
+		if err == nil {
 			return time.Since(t0)
 		}
 		if time.Since(t0) > 2*time.Minute {
-			t.Fatal("start: not ready after 2 minutes")
+			t.Fatalf("start: not ready after 2 minutes; last check: %v: %s", err, out)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

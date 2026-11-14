@@ -378,6 +378,8 @@ Two more tests run against real systems:
 
 CI (`.github/workflows/ci.yml`) runs all four on every push and pull request.
 
+`go test -tags bench -run TestBenchContainerSpinup -v ./internal/bootstrap/` times a container's spin-up phase by phase on a local runtime; see [docs/benchmark.md](docs/benchmark.md) for what it measures and the results so far.
+
 Design history: [docs/brief.md](docs/brief.md) and [docs/plan-v1.md](docs/plan-v1.md), the notes the first version was built from.
 
 What comes next, what is deliberately left out, and the rule new features are held to: [docs/todo.md](docs/todo.md).
