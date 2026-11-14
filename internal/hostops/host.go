@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -36,6 +38,10 @@ type Host interface {
 	Restore(ctx context.Context, typ string, vmid int, archive, storage string) error
 	// Destroy deletes the guest and its disks (pct|qm destroy vmid --purge).
 	Destroy(ctx context.Context, typ string, vmid int) error
+	// VolumeUsed measures the bytes a volume holds on this host. It errors
+	// on any volume it cannot measure, so the caller can fall back to the
+	// allocated size.
+	VolumeUsed(ctx context.Context, volid string) (int64, error)
 }
 
 // SSHHost implements Host with the system ssh binary.
@@ -198,4 +204,93 @@ func (h *SSHHost) Restore(ctx context.Context, typ string, vmid int, archive, st
 // Destroy implements Host.
 func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 	return h.guest(ctx, typ, "destroy", vmid, "--purge")
+}
+
+// VolumeUsed implements Host. pvesm resolves the volume to a path, and the
+// path says how to measure it: a zvol through zfs, any other device as a
+// thin LV through lvs, a regular file by its allocated blocks. Anything
+// else is an error, and the caller then counts the disk at its allocated
+// size: a linked clone, a directory, a remote path, and an LV that is not
+// an active thin LV (thick, cache, an old-style snapshot, or an inactive
+// thin LV, which reports no data percent). The PVE API reports no used
+// figure for these volumes, so the host is asked.
+func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
+	// A linked clone named after its base (base-9000-disk-0/vm-200-disk-0
+	// on ZFS or RBD, or a qcow2 overlay on its base file) is refused by its
+	// name, whatever the storage. Only the qcow2 overlay is known to
+	// undercount (its file holds only its own changes, but the dump also
+	// carries what it reads from the base); a ZFS clone's
+	// logicalreferenced likely includes the shared data, but it is
+	// refused too, on purpose: an over-estimate is safe, an undercount is
+	// not. LVM-thin names its clones vm-200-disk-0 like any disk, so they
+	// take the lvs path; a thin snapshot's data percent is believed to
+	// count the blocks it shares with the base (not yet checked on a real
+	// clone).
+	_, name, _ := strings.Cut(volid, ":")
+	if parts := strings.Split(name, "/"); slices.ContainsFunc(parts[:len(parts)-1], func(p string) bool { return strings.HasPrefix(p, "base-") }) {
+		return 0, fmt.Errorf("%s is a linked clone: its used bytes leave out the base", volid)
+	}
+	var out bytes.Buffer
+	if err := h.run(ctx, &out, "pvesm", "path", volid); err != nil {
+		return 0, err
+	}
+	path := strings.TrimSpace(out.String())
+	bad := func(cmd string) (int64, error) {
+		return 0, fmt.Errorf("%s %s on %s: cannot measure from %q", cmd, path, h.Target.Dest, strings.TrimSpace(out.String()))
+	}
+	out.Reset()
+	switch {
+	case strings.HasPrefix(path, "/dev/zvol/"):
+		// logicalreferenced counts the data before pool compression; the
+		// dump reads it uncompressed, so this is the safer figure.
+		if err := h.run(ctx, &out, "zfs", "get", "-Hp", "-o", "value", "logicalreferenced", strings.TrimPrefix(path, "/dev/zvol/")); err != nil {
+			return 0, err
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(out.String()), 10, 64)
+		if err != nil || n < 0 {
+			return bad("zfs get")
+		}
+		return n, nil
+	case strings.HasPrefix(path, "/dev/"):
+		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", path); err != nil {
+			return 0, err
+		}
+		// Only a thin LV's data percent is the share of the volume in use;
+		// a cache LV or an old-style snapshot fills it with something else,
+		// and a thick LV prints none.
+		f := strings.Fields(out.String())
+		if len(f) != 3 || f[0] != "thin" {
+			return bad("lvs")
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			return bad("lvs")
+		}
+		// lvs may print the percent with a decimal comma under some locales.
+		pct, err := strconv.ParseFloat(strings.Replace(f[2], ",", ".", 1), 64)
+		if err != nil || pct < 0 || pct > 100 {
+			return bad("lvs")
+		}
+		return int64(math.Ceil(float64(size) * pct / 100)), nil
+	case strings.HasPrefix(path, "/"):
+		// Allocated blocks, not the apparent size: a sparse raw file or a
+		// preallocated qcow2 is as long as the whole disk. On a compressing
+		// filesystem the blocks undercount the data, as zfs referenced
+		// would; the dump is compressed too, and the margin on top covers
+		// the difference.
+		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%F", "--", path); err != nil {
+			return 0, err
+		}
+		f := strings.SplitN(strings.TrimSpace(out.String()), ":", 3)
+		if len(f) != 3 || f[2] != "regular file" {
+			return bad("stat")
+		}
+		blocks, err1 := strconv.ParseInt(f[0], 10, 64)
+		bsize, err2 := strconv.ParseInt(f[1], 10, 64)
+		if err1 != nil || err2 != nil || blocks < 0 || bsize <= 0 {
+			return bad("stat")
+		}
+		return blocks * bsize, nil
+	}
+	return 0, fmt.Errorf("pvesm path %s on %s: %q is not a local path", volid, h.Target.Dest, path)
 }

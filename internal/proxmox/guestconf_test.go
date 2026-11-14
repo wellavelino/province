@@ -32,7 +32,7 @@ func TestDisksLXC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(ds) != "[{mp0 data 34359738368} {rootfs local-lvm 8589934592}]" {
+	if fmt.Sprint(ds) != "[{mp0 data 34359738368 data:vm-105-disk-1} {rootfs local-lvm 8589934592 local-lvm:vm-105-disk-0}]" {
 		t.Fatalf("disks = %v", ds)
 	}
 	if TotalSize(ds) != 40<<30 || PrimaryStorage(ds) != "local-lvm" {
@@ -54,6 +54,7 @@ func TestDisksQEMU(t *testing.T) {
 		"net1":     "virtio=BC:24:11:00:00:03,bridge=vmbr0",
 		"hostpci0": "0000:01:00.0",
 		"usb0":     "host=1234:5678",
+		"unused0":  "local-lvm:vm-200-disk-3",
 	}
 	ds, err := Disks(conf)
 	if err != nil {
@@ -61,6 +62,11 @@ func TestDisksQEMU(t *testing.T) {
 	}
 	if TotalSize(ds) != 42<<30+4<<20 || len(ds) != 3 {
 		t.Fatalf("disks = %v", ds)
+	}
+	// vzdump skips unusedN volumes, so a move must not count them.
+	want := "[{efidisk0 local-lvm 4194304 local-lvm:vm-200-disk-2} {scsi0 local-lvm 34359738368 local-lvm:vm-200-disk-0} {virtio1 ssd 10737418240 ssd:vm-200-disk-1}]"
+	if fmt.Sprint(ds) != want {
+		t.Fatalf("disks = %v\nwant    %s", ds, want)
 	}
 	if PrimaryStorage(ds) != "local-lvm" {
 		t.Fatalf("primary = %q", PrimaryStorage(ds))

@@ -341,7 +341,7 @@ Every command takes `--json`: stdout then holds exactly one JSON document, the r
 - the target VMID is free on the target (if it is taken, the refusal suggests a `--to-vmid` free on every host);
 - the bridges and storage exist on the target;
 - the target storage has room for the full allocated disk size;
-- `dump_dir` has room for the dump, estimated from a running container's used bytes (used × 1.1 + 1 GiB), or the allocated size for a VM or a stopped container. On a `dir` or `zfspool` target storage, which usually shares the dump's filesystem, it needs room for both.
+- `dump_dir` has room for the dump, estimated from the used bytes (used × 1.1 + 1 GiB, never more than the allocated size). A running container's used bytes come from the API; for a VM or a stopped container each disk is measured on the source host (`lvs` for a thin LV, `zfs` for a zvol, allocated blocks for a file), and a disk it cannot measure counts at its allocated size. On a `dir` or `zfspool` target storage, which usually shares the dump's filesystem, it needs room for both.
 
 Then it shuts down the source, streams `vzdump --stdout --mode stop --compress zstd` through your machine into `dump_dir` on the target, checks it with `zstd -t`, restores with the same VMID or `--to-vmid` (MAC kept either way, so DHCP keeps the IP), sets `onboot=0` on the source and removes the dump. The target starts only with `--start`, and only after the source is pinned to `onboot=0`.
 

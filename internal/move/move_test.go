@@ -84,7 +84,12 @@ func newRig(t *testing.T) *rig {
 
 func opts() Opts { return Opts{VMID: 105, From: "pve1", To: "pve2", Yes: true} }
 
-var preflightReads = []string{"pve1 Status lxc 105", "pve2 DfAvail /var/lib/vz/dump"}
+// The rig's container reports no used bytes and has no measurement, so
+// preflight asks the source host and falls back to the allocated size.
+var preflightReads = []string{"pve1 Status lxc 105", "pve1 VolumeUsed local-lvm:vm-105-disk-0", "pve2 DfAvail /var/lib/vz/dump"}
+
+// apiReads are the preflight reads when the API reports the used bytes.
+var apiReads = []string{"pve1 Status lxc 105", "pve2 DfAvail /var/lib/vz/dump"}
 
 func happyOrder(start bool) []string {
 	o := append(slices.Clone(preflightReads),
@@ -257,7 +262,7 @@ func TestMoveDirStorageSharingDumpFilesystemNeedsTwiceTheDisks(t *testing.T) {
 	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "(dir)") || !strings.Contains(err.Error(), "needs 24.0 GiB (dump: allocated 12.0 GiB; plus restored disks: allocated 12.0 GiB)") {
 		t.Fatalf("err = %v", err)
 	}
-	assertJournal(t, r, preflightReads) // reads only, nothing changed
+	assertJournal(t, r, []string{"pve1 Status lxc 105", "pve1 VolumeUsed local:105/vm-105-disk-0.raw", "pve2 DfAvail /var/lib/vz/dump"}) // reads only, nothing changed
 
 	// zfspool shares the pool with the root dataset; any storage whose free
 	// bytes equal dump_dir's shares its filesystem.
@@ -311,7 +316,7 @@ func TestMoveDumpDirEstimatedFromUsedBytesOfRunningContainer(t *testing.T) {
 	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "has 8.0 GiB free") || !strings.Contains(err.Error(), "(used 7.0 GiB → needs 8.7 GiB)") {
 		t.Fatalf("err = %v", err)
 	}
-	assertJournal(t, r, preflightReads)
+	assertJournal(t, r, apiReads)
 
 	// Used 0 (a stopped container reports 0): fall back to the allocated
 	// size, which refuses here.
@@ -359,11 +364,12 @@ func TestMoveSharedStorageNeedsUsedEstimatePlusAllocated(t *testing.T) {
 	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "needs 15.2 GiB (dump: used 2.0 GiB → needs 3.2 GiB; plus restored disks: allocated 12.0 GiB)") {
 		t.Fatalf("err = %v", err)
 	}
-	assertJournal(t, r, preflightReads)
+	assertJournal(t, r, apiReads)
 }
 
-func TestMoveQEMUDumpDirUsesAllocatedSize(t *testing.T) {
-	// PVE reports 0 used for VMs; even a non-zero value is not asked for.
+func TestMoveQEMUDumpDirUsesAllocatedSizeWhenUnmeasured(t *testing.T) {
+	// PVE reports 0 used for VMs, so the API is not asked; the host cannot
+	// measure the disk either, so the allocated size stands.
 	r := newRig(t)
 	r.api["pve1"].Guests = []proxmox.Guest{{VMID: 200, Name: "vm", Status: "running", Type: "qemu"}}
 	r.api["pve1"].Configs[200] = map[string]string{"scsi0": "local-lvm:vm-200-disk-0,size=60G"}
@@ -565,5 +571,113 @@ func TestMoveStartFailureReturnsTheResult(t *testing.T) {
 	}
 	if res == nil || res.Target != "stopped" || res.To != "pve2" || res.TargetVMID != 105 || !res.DumpRemoved || !strings.Contains(res.Source, "onboot=0") {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+// vmRig is the rig with a running VM 200 on pve1: a 96 GiB thin LV at
+// 57.6 % used, an EFI disk and an unused volume, and 84.8 GiB free in pve2's
+// dump dir.
+func vmRig(t *testing.T) (*rig, Opts) {
+	r := newRig(t)
+	r.api["pve1"].Guests = []proxmox.Guest{{VMID: 200, Name: "vm", Status: "running", Type: "qemu"}}
+	r.api["pve1"].Configs[200] = map[string]string{
+		"scsi0":    "local-lvm:vm-200-disk-0,size=96G",
+		"efidisk0": "local-lvm:vm-200-disk-1,efitype=4m,size=4M",
+		"unused0":  "local-lvm:vm-200-disk-2",
+		"net0":     "virtio=BC:24:11:00:00:02,bridge=vmbr0",
+	}
+	r.api["pve2"].StorageLs[0].Avail = 200 << 30
+	r.hosts["pve1"].Used = map[string]int64{
+		"local-lvm:vm-200-disk-0": 59373627900, // 57.6 % of 96 GiB
+		"local-lvm:vm-200-disk-1": 4 << 20,
+	}
+	r.hosts["pve2"].Avail["/var/lib/vz/dump"] = 91053306675 // 84.8 GiB
+	return r, Opts{VMID: 200, From: "pve1", To: "pve2", Yes: true}
+}
+
+func TestMoveVMDumpDirEstimatedFromMeasuredUsedBytes(t *testing.T) {
+	// The reported case: allocated 96 GiB does not fit in 84.8 GiB, but the
+	// dump holds only the 55.3 GiB in use (55.3*1.1+1 = 61.8 GiB).
+	r, o := vmRig(t)
+	if _, err := r.m.Move(ctx, o); err != nil {
+		t.Fatalf("used 55.3 GiB, 84.8 GiB free: %v", err)
+	}
+	// Each used disk is measured once on the source, the unused one never.
+	var asked []string
+	for _, c := range r.hosts["pve1"].Calls() {
+		if strings.Contains(c, "VolumeUsed") {
+			asked = append(asked, c)
+		}
+	}
+	if want := []string{"pve1 VolumeUsed local-lvm:vm-200-disk-1", "pve1 VolumeUsed local-lvm:vm-200-disk-0"}; !slices.Equal(asked, want) {
+		t.Fatalf("measured %v, want %v", asked, want)
+	}
+
+	// Too little room for the estimate: the error names the basis.
+	r, o = vmRig(t)
+	r.hosts["pve2"].Avail["/var/lib/vz/dump"] = 60 << 30
+	_, err := r.m.Move(ctx, o)
+	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "has 60.0 GiB free, the dump may need up to 61.8 GiB (used 55.3 GiB → needs 61.8 GiB)") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, e := range r.j.Entries() {
+		if !strings.Contains(e, "Status") && !strings.Contains(e, "VolumeUsed") && !strings.Contains(e, "DfAvail") {
+			t.Fatalf("refusal changed something: %v", r.j.Entries())
+		}
+	}
+}
+
+func TestMoveVMDiskThatCannotBeMeasuredCountsAllocated(t *testing.T) {
+	// The EFI disk fails to measure: it counts at its allocated 4 MiB, the
+	// main disk stays measured, and the basis says so.
+	r, o := vmRig(t)
+	delete(r.hosts["pve1"].Used, "local-lvm:vm-200-disk-1")
+	r.hosts["pve2"].Avail["/var/lib/vz/dump"] = 60 << 30
+	_, err := r.m.Move(ctx, o)
+	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "(used 55.3 GiB, counting efidisk0 at allocated size → needs 61.8 GiB)") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// No disk measured (an error, or a storage type it does not know): the
+	// allocated size of every disk stands, as before.
+	r, o = vmRig(t)
+	r.hosts["pve1"].Used = nil
+	_, err = r.m.Move(ctx, o)
+	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "may need up to 96.0 GiB (allocated 96.0 GiB)") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMoveNearlyFullDiskEstimateCappedAtAllocated(t *testing.T) {
+	// 10 GiB disk, 9.5 GiB used: used*1.1+1 GiB is more than the disk, and
+	// the dump cannot be bigger than the disk, so the allocated size stands
+	// and 10.5 GiB free is enough.
+	r := newRig(t)
+	r.api["pve1"].Configs[105]["rootfs"] = "local-lvm:vm-105-disk-0,size=10G"
+	r.hosts["pve1"].Used = map[string]int64{"local-lvm:vm-105-disk-0": 19 << 29}
+	r.hosts["pve2"].Avail["/var/lib/vz/dump"] = 21 << 29
+	if _, err := r.m.Move(ctx, opts()); err != nil {
+		t.Fatalf("9.5 of 10 GiB used, 10.5 GiB free: %v", err)
+	}
+	r = newRig(t)
+	r.api["pve1"].Configs[105]["rootfs"] = "local-lvm:vm-105-disk-0,size=10G"
+	r.hosts["pve1"].Used = map[string]int64{"local-lvm:vm-105-disk-0": 19 << 29}
+	r.hosts["pve2"].Avail["/var/lib/vz/dump"] = 9 << 30
+	_, err := r.m.Move(ctx, opts())
+	if errs.KindOf(err) != errs.Preflight || !strings.Contains(err.Error(), "may need up to 10.0 GiB (allocated 10.0 GiB)") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMoveStoppedContainerMeasuredOnHost(t *testing.T) {
+	// A stopped container reports no used bytes; the host measures 7 GiB of
+	// its 96 GiB rootfs, so 50 GiB free is enough.
+	r := newRig(t)
+	r.api["pve1"].Guests[0].Status = "stopped"
+	r.hosts["pve1"].State = "stopped"
+	r.api["pve1"].Configs[105]["rootfs"] = "local-lvm:vm-105-disk-0,size=96G"
+	r.hosts["pve1"].Used = map[string]int64{"local-lvm:vm-105-disk-0": 7 << 30}
+	if _, err := r.m.Move(ctx, opts()); err != nil {
+		t.Fatalf("stopped, 7 GiB used: %v", err)
 	}
 }

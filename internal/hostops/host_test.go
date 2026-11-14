@@ -138,3 +138,94 @@ func TestSudoPrefixPropagates(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeUsed(t *testing.T) {
+	type step struct {
+		argv []string
+		resp runtest.Response
+	}
+	path := func(volid, out string) step {
+		return step{remote("pvesm", "path", volid), runtest.Response{Stdout: out + "\n"}}
+	}
+	lvs := func(dev, out string) step {
+		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", dev), runtest.Response{Stdout: out}}
+	}
+	stat := func(file, out string) step {
+		return step{remote("stat", "-L", "-c", "%b:%B:%F", "--", file), runtest.Response{Stdout: out}}
+	}
+	cases := map[string]struct {
+		volid string
+		steps []step
+		want  int64 // -1: an error is expected
+	}{
+		"thin LV": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 57.60\n"),
+		}, 59373627900}, // 96 GiB at 57.60 %, rounded up
+		"thin LV, comma decimal": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 50,00\n"),
+		}, 1 << 29},
+		"thick LV has no data percent": {"vg:vm-200-disk-0", []step{
+			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
+			lvs("/dev/vg/vm-200-disk-0", "  linear 1073741824 \n"),
+		}, -1},
+		"cache LV": {"vg:vm-200-disk-0", []step{
+			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
+			lvs("/dev/vg/vm-200-disk-0", "  cache 1073741824 12.00\n"),
+		}, -1},
+		"inactive thin LV": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 \n"),
+		}, -1},
+		"device that is not an LV": {"rbd:vm-200-disk-0", []step{
+			path("rbd:vm-200-disk-0", "/dev/rbd/pool/vm-200-disk-0"),
+			{remote("lvs"), runtest.Response{Code: 5, Stderr: "Failed to find logical volume"}},
+		}, -1},
+		"zvol": {"local-zfs:vm-200-disk-0", []step{
+			path("local-zfs:vm-200-disk-0", "/dev/zvol/rpool/data/vm-200-disk-0"),
+			{remote("zfs", "get", "-Hp", "-o", "value", "logicalreferenced", "rpool/data/vm-200-disk-0"), runtest.Response{Stdout: "21474836480\n"}},
+		}, 20 << 30},
+		"qcow2 file": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "4194304:512:regular file\n"),
+		}, 2 << 30},
+		"directory (subvol)": {"local-zfs:subvol-105-disk-0", []step{
+			path("local-zfs:subvol-105-disk-0", "/rpool/data/subvol-105-disk-0"),
+			stat("/rpool/data/subvol-105-disk-0", "9:512:directory\n"),
+		}, -1},
+		"path that is not local": {"iscsi:0.0.0.scsi-example", []step{
+			path("iscsi:0.0.0.scsi-example", "iscsi://192.0.2.10/iqn.2026-11.org.example:t/0"),
+		}, -1},
+		"zfs linked clone":   {"local-zfs:base-9000-disk-0/vm-200-disk-0", nil, -1},
+		"qcow2 linked clone": {"local:9000/base-9000-disk-0.qcow2/200/vm-200-disk-0.qcow2", nil, -1},
+		"pvesm fails": {"gone:vm-200-disk-0", []step{
+			{remote("pvesm", "path"), runtest.Response{Code: 255, Stderr: "storage 'gone' does not exist"}},
+		}, -1},
+	}
+	for name, c := range cases {
+		h, f := newHost(t, false)
+		var want []string
+		for _, s := range c.steps {
+			f.On(s.argv, s.resp)
+			want = append(want, strings.Join(s.argv, " "))
+		}
+		n, err := h.VolumeUsed(context.Background(), c.volid)
+		switch {
+		case c.want < 0 && err == nil:
+			t.Errorf("%s: used = %d, want an error", name, n)
+		case c.want >= 0 && (err != nil || n != c.want):
+			t.Errorf("%s: used = %d, %v; want %d", name, n, err, c.want)
+		}
+		// Each step ran once, in order; a prefix-only step matches any
+		// argv that starts with it.
+		got := f.Commands()
+		ok := len(got) == len(want)
+		for i := 0; ok && i < len(got); i++ {
+			ok = strings.HasPrefix(got[i], want[i])
+		}
+		if !ok {
+			t.Errorf("%s: commands = %q\nwant %q", name, got, want)
+		}
+	}
+}
