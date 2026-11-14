@@ -5,6 +5,7 @@ package hostops
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -271,6 +272,11 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		if err != nil || pct < 0 || pct > 100 {
 			return bad("lvs")
 		}
+		// lvs rounds the percent to two decimals, so the true figure can be
+		// up to 0.005 points higher; on a very large, lightly used LV that
+		// is more than the caller's margin. Count the rounded value plus
+		// 0.01 points, never more than the whole volume.
+		pct = math.Min(pct+0.01, 100)
 		return int64(math.Ceil(float64(size) * pct / 100)), nil
 	case strings.HasPrefix(path, "/"):
 		// Allocated blocks, not the apparent size: a sparse raw file or a
@@ -278,17 +284,41 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		// filesystem the blocks undercount the data, as zfs referenced
 		// would; the dump is compressed too, and the margin on top covers
 		// the difference.
-		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%F", "--", path); err != nil {
+		// %f is the raw mode in hex; %F would be the file type in the
+		// host's language.
+		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%f", "--", path); err != nil {
 			return 0, err
 		}
 		f := strings.SplitN(strings.TrimSpace(out.String()), ":", 3)
-		if len(f) != 3 || f[2] != "regular file" {
+		if len(f) != 3 {
 			return bad("stat")
 		}
 		blocks, err1 := strconv.ParseInt(f[0], 10, 64)
 		bsize, err2 := strconv.ParseInt(f[1], 10, 64)
-		if err1 != nil || err2 != nil || blocks < 0 || bsize <= 0 {
+		mode, err3 := strconv.ParseUint(f[2], 16, 32)
+		if err1 != nil || err2 != nil || err3 != nil || blocks < 0 || bsize <= 0 || mode&0o170000 != 0o100000 {
 			return bad("stat")
+		}
+		if strings.HasSuffix(path, ".qcow2") {
+			// A qcow2 file can hold only the changes on top of a backing
+			// image, and PVE 9's external snapshots chain one without
+			// putting base- in the volid. The dump carries the whole chain,
+			// so a file with a backing image is not measured. -U reads the
+			// header of a running VM's image without taking its lock.
+			out.Reset()
+			if err := h.run(ctx, &out, "qemu-img", "info", "-U", "--output=json", path); err != nil {
+				return 0, err
+			}
+			var info struct {
+				Format  string `json:"format"`
+				Backing string `json:"backing-filename"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &info); err != nil || info.Format != "qcow2" {
+				return bad("qemu-img info")
+			}
+			if info.Backing != "" {
+				return 0, fmt.Errorf("%s on %s has a backing image (%s): its used bytes leave out the chain", path, h.Target.Dest, info.Backing)
+			}
 		}
 		return blocks * bsize, nil
 	}

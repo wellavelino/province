@@ -151,7 +151,10 @@ func TestVolumeUsed(t *testing.T) {
 		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", dev), runtest.Response{Stdout: out}}
 	}
 	stat := func(file, out string) step {
-		return step{remote("stat", "-L", "-c", "%b:%B:%F", "--", file), runtest.Response{Stdout: out}}
+		return step{remote("stat", "-L", "-c", "%b:%B:%f", "--", file), runtest.Response{Stdout: out}}
+	}
+	qemuImg := func(file, out string) step {
+		return step{remote("qemu-img", "info", "-U", "--output=json", file), runtest.Response{Stdout: out}}
 	}
 	cases := map[string]struct {
 		volid string
@@ -161,11 +164,15 @@ func TestVolumeUsed(t *testing.T) {
 		"thin LV": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
 			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 57.60\n"),
-		}, 59373627900}, // 96 GiB at 57.60 %, rounded up
+		}, 59383935822}, // 96 GiB at 57.61 %: lvs rounds to two decimals, so 0.01 is added
+		"thin LV, full: the margin stops at 100 %": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 100.00\n"),
+		}, 1 << 30},
 		"thin LV, comma decimal": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
 			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 50,00\n"),
-		}, 1 << 29},
+		}, 536978287},
 		"thick LV has no data percent": {"vg:vm-200-disk-0", []step{
 			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
 			lvs("/dev/vg/vm-200-disk-0", "  linear 1073741824 \n"),
@@ -188,11 +195,28 @@ func TestVolumeUsed(t *testing.T) {
 		}, 20 << 30},
 		"qcow2 file": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
-			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "4194304:512:regular file\n"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "4194304:512:81a4\n"),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "virtual-size": 103079215104}`),
 		}, 2 << 30},
+		// A PVE 9 external snapshot keeps the volid but chains the file to a
+		// backing image, with no base- in the name.
+		"qcow2 file with a backing image": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "backing-filename": "snap-pre-vm-200-disk-0.qcow2"}`),
+		}, -1},
+		"qcow2 that qemu-img cannot read": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
+			{remote("qemu-img"), runtest.Response{Code: 1, Stderr: "Could not open"}},
+		}, -1},
+		"raw file: no backing chain to check": {"local:200/vm-200-disk-0.raw", []step{
+			path("local:200/vm-200-disk-0.raw", "/var/lib/vz/images/200/vm-200-disk-0.raw"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.raw", "2048:512:81a4\n"),
+		}, 1 << 20},
 		"directory (subvol)": {"local-zfs:subvol-105-disk-0", []step{
 			path("local-zfs:subvol-105-disk-0", "/rpool/data/subvol-105-disk-0"),
-			stat("/rpool/data/subvol-105-disk-0", "9:512:directory\n"),
+			stat("/rpool/data/subvol-105-disk-0", "9:512:41ed\n"),
 		}, -1},
 		"path that is not local": {"iscsi:0.0.0.scsi-example", []step{
 			path("iscsi:0.0.0.scsi-example", "iscsi://192.0.2.10/iqn.2026-11.org.example:t/0"),
