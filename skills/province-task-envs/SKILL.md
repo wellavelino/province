@@ -36,9 +36,13 @@ Rely on `isolated: true` in the tasks host config (no LAN access, enforced on th
 
 ## The loop
 
+Every change to `~/.province-tasks` and `~/.province-held` goes through one lock, so parallel sessions cannot overwrite each other's lines, and every change is checked: if one fails, stop and tell the owner before going on.
+
 ```
+track() { flock ~/.province-tasks.lock sh -c "$1"; }   # run one tracking-file change under the lock
+
 name=task-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
-echo "$name $session" >> ~/.province-tasks
+track "echo '$name $session' >> ~/.province-tasks" || { echo "could not record $name: stop"; exit 1; }
 
 province env create "$name" --host tasks --recipe <recipe> --ttl 2h --json          # plan: check it
 province env create "$name" --host tasks --recipe <recipe> --ttl 2h --apply --json  # create
@@ -57,16 +61,17 @@ scp "dev@$name:work/<artifact>" "./results/$name/" ||
 Check scp's exit status. If the copy still fails after the retry, do not destroy the env: it may hold the only copy. Hold it instead:
 
 ```
-echo "$name $session" >> ~/.province-held && sed -i "/^$name /d" ~/.province-tasks
+track "echo '$name $session' >> ~/.province-held" || { echo "could not hold $name: stop, keep the env, tell the owner"; exit 1; }
+track "sed -i '/^$name /d' ~/.province-tasks"
 province env show "$name" --json   # note expires_at
 ```
 
-Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
+Report the env as held only once its line is in `~/.province-held`. Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
 
 Otherwise, once the results are copied, always:
 
 ```
-province env destroy "$name" --yes --json && sed -i "/^$name /d" ~/.province-tasks
+province env destroy "$name" --yes --json && track "sed -i '/^$name /d' ~/.province-tasks"
 ```
 
 Remove the name from `~/.province-tasks` only once the destroy succeeded. If it fails, keep the entry (the crash cleanup below relies on it) and report the error to the owner.
