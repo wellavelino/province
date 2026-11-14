@@ -197,7 +197,7 @@ func TestVolumeUsed(t *testing.T) {
 		"path that is not local": {"iscsi:0.0.0.scsi-example", []step{
 			path("iscsi:0.0.0.scsi-example", "iscsi://192.0.2.10/iqn.2026-11.org.example:t/0"),
 		}, -1},
-		"thin linked clone":  {"local-lvm:base-9000-disk-0/vm-200-disk-0", nil, -1},
+		"zfs linked clone":   {"local-zfs:base-9000-disk-0/vm-200-disk-0", nil, -1},
 		"qcow2 linked clone": {"local:9000/base-9000-disk-0.qcow2/200/vm-200-disk-0.qcow2", nil, -1},
 		"pvesm fails": {"gone:vm-200-disk-0", []step{
 			{remote("pvesm", "path"), runtest.Response{Code: 255, Stderr: "storage 'gone' does not exist"}},

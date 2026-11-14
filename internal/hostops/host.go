@@ -209,12 +209,23 @@ func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 // VolumeUsed implements Host. pvesm resolves the volume to a path, and the
 // path says how to measure it: a zvol through zfs, any other device as a
 // thin LV through lvs, a regular file by its allocated blocks. Anything
-// else (a directory, a remote path, a thick LV) is an error. The PVE API
-// reports no used figure for these volumes, so the host is asked.
+// else is an error, and the caller then counts the disk at its allocated
+// size: a linked clone, a directory, a remote path, and an LV that is not
+// an active thin LV (thick, cache, an old-style snapshot, or an inactive
+// thin LV, which reports no data percent). The PVE API reports no used
+// figure for these volumes, so the host is asked.
 func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
-	// A linked clone (base-9000-disk-0/vm-200-disk-0, or a qcow2 overlay
-	// on its base) holds only its own changes, but the dump also carries
-	// the data it reads from the base.
+	// A linked clone named after its base (base-9000-disk-0/vm-200-disk-0
+	// on ZFS or RBD, or a qcow2 overlay on its base file) is refused by its
+	// name, whatever the storage. Only the qcow2 overlay is known to
+	// undercount (its file holds only its own changes, but the dump also
+	// carries what it reads from the base); a ZFS clone's
+	// logicalreferenced likely includes the shared data, but it is
+	// refused too, on purpose: an over-estimate is safe, an undercount is
+	// not. LVM-thin names its clones vm-200-disk-0 like any disk, so they
+	// take the lvs path; a thin snapshot's data percent is believed to
+	// count the blocks it shares with the base (not yet checked on a real
+	// clone).
 	_, name, _ := strings.Cut(volid, ":")
 	if parts := strings.Split(name, "/"); slices.ContainsFunc(parts[:len(parts)-1], func(p string) bool { return strings.HasPrefix(p, "base-") }) {
 		return 0, fmt.Errorf("%s is a linked clone: its used bytes leave out the base", volid)
