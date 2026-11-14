@@ -15,6 +15,9 @@ export HOME=/root
 export DEBIAN_FRONTEND=noninteractive
 KEYFILE=/run/province.authkey
 LOCALE_GEN=/etc/locale.gen
+# Seconds a joined guest (no key sent) waits for tailscaled, just
+# restarted, to report its address.
+TS_IP_WAIT=30
 
 log() { printf 'province-bootstrap: %s\n' "$*" >&2; }
 
@@ -132,6 +135,16 @@ join_tailnet() {
     ssh=true
     up_flags+=(--ssh)
   fi
+  # province sent no key because it saw the guest joined: give the
+  # restarted daemon time to report the address. Never with a key, so a
+  # guest that is not joined goes straight to `tailscale up`.
+  local waited=0
+  if [ -z "$TS_AUTHKEY" ]; then
+    while [ "$waited" -lt "$TS_IP_WAIT" ] && ! tailscale ip -4 >/dev/null 2>&1; do
+      waited=$((waited + 1))
+      sleep 1
+    done
+  fi
   if tailscale ip -4 >/dev/null 2>&1; then
     log "already on the tailnet; setting Tailscale SSH to $ssh"
     # Bootstrap runs over `pct exec`, not the guest's SSH, so toggling
@@ -141,7 +154,7 @@ join_tailnet() {
     return 0
   fi
   if [ -z "$TS_AUTHKEY" ]; then
-    log "not on the tailnet and province sent no auth key (it saw the guest joined); re-run the bootstrap"
+    log "not on the tailnet after $TS_IP_WAIT s and province sent no auth key (it saw the guest joined); re-run the bootstrap"
     return 1
   fi
   trap 'rm -f "$KEYFILE"' EXIT

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,13 +60,14 @@ func readLines(t *testing.T, path string) []string {
 
 // tailscaleStub shadows tailscale: `tailscale ip` succeeds when joined
 // (the guest is already on the tailnet); other calls are logged to
-// $T/calls, `up` with the key file's content.
+// $T/calls, `up` with the key file's content. sleep returns at once.
 func tailscaleStub(joined bool) string {
 	ipRC := "1"
 	if joined {
 		ipRC = "0"
 	}
 	return `KEYFILE=$T/authkey
+sleep() { :; }
 tailscale() {
   case "$1" in
     ip) return ` + ipRC + ` ;;
@@ -112,6 +114,65 @@ func TestJoinTailnetNoKeyNotJoinedFails(t *testing.T) {
 	}
 	if calls := readLines(t, filepath.Join(dir, "calls")); len(calls) != 0 {
 		t.Fatalf("calls = %q", calls)
+	}
+}
+
+// slowTailscaleStub is tailscaleStub(true) for a daemon that reports its
+// address only from the after-th `tailscale ip` call on (never if after is
+// 0). sleep is stubbed and counted in $T/sleeps.
+func slowTailscaleStub(after int) string {
+	return `KEYFILE=$T/authkey
+sleep() { printf 's\n' >>"$T/sleeps"; }
+tailscale() {
+  case "$1" in
+    ip)
+      printf 'i\n' >>"$T/ips"
+      n=$(wc -l <"$T/ips")
+      [ ` + strconv.Itoa(after) + ` -gt 0 ] && [ "$n" -ge ` + strconv.Itoa(after) + ` ] ;;
+    *) printf '%s\n' "$*" >>"$T/calls" ;;
+  esac
+}`
+}
+
+// A joined guest whose restarted tailscaled is slow to report its address
+// waits for it instead of failing, and still gets no key.
+func TestJoinTailnetNoKeyWaitsForAddress(t *testing.T) {
+	p := params(true)
+	p.Joined = true
+	dir := t.TempDir()
+	scriptFn(t, dir, p, slowTailscaleStub(4), "join_tailnet")
+	if calls := readLines(t, filepath.Join(dir, "calls")); len(calls) != 1 || calls[0] != "set --ssh=true --accept-risk=lose-ssh" {
+		t.Fatalf("calls = %q", calls)
+	}
+	if s := readLines(t, filepath.Join(dir, "sleeps")); len(s) != 3 {
+		t.Errorf("slept %d times, want 3", len(s))
+	}
+}
+
+// The wait is bounded: no address after TS_IP_WAIT seconds fails, without
+// running tailscale up.
+func TestJoinTailnetNoKeyWaitIsBounded(t *testing.T) {
+	p := params(true)
+	p.Joined = true
+	dir := t.TempDir()
+	stderr, err := scriptRun(t, dir, p, slowTailscaleStub(0), "join_tailnet")
+	if err == nil || !strings.Contains(stderr, "no auth key") {
+		t.Fatalf("err = %v, stderr = %q", err, stderr)
+	}
+	if s := readLines(t, filepath.Join(dir, "sleeps")); len(s) != 30 {
+		t.Errorf("slept %d times, want 30", len(s))
+	}
+	if calls := readLines(t, filepath.Join(dir, "calls")); len(calls) != 0 {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+// With a key, a guest that is not joined runs tailscale up at once.
+func TestJoinTailnetWithKeyDoesNotWait(t *testing.T) {
+	dir := t.TempDir()
+	scriptFn(t, dir, params(false), slowTailscaleStub(0), "join_tailnet")
+	if s := readLines(t, filepath.Join(dir, "sleeps")); len(s) != 0 {
+		t.Errorf("slept %d times with a key", len(s))
 	}
 }
 
