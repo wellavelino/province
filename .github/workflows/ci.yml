@@ -85,7 +85,7 @@ jobs:
           # driver, which ACLs on a bridge NIC need.
           sudo apt-get update -q
           sudo apt-get install -y -q nftables
-          curl -fsSL https://pkgs.zabbly.com/key.asc -o "$RUNNER_TEMP/zabbly.asc"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://pkgs.zabbly.com/key.asc -o "$RUNNER_TEMP/zabbly.asc"
           fprs=$(gpg --show-keys --with-colons "$RUNNER_TEMP/zabbly.asc" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')
           if [ "$fprs" != "$ZABBLY_KEY_FPR" ]; then
             echo "Zabbly key fingerprint(s) '$fprs', want '$ZABBLY_KEY_FPR'" >&2
@@ -101,8 +101,8 @@ jobs:
           Architectures: $(dpkg --print-architecture)
           Signed-By: /etc/apt/keyrings/zabbly.asc
           EOF
-          sudo apt-get update -q
-          sudo apt-get install -y -q incus
+          sudo apt-get -o Acquire::Retries=5 update -q
+          sudo apt-get -o Acquire::Retries=5 install -y -q incus
           apt-cache policy incus
           sudo incus admin init --minimal
           # Let the runner user use the daemon without a new login session.
