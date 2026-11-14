@@ -3,6 +3,8 @@ package hostops
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -148,7 +150,7 @@ func TestVolumeUsed(t *testing.T) {
 		return step{remote("pvesm", "path", volid), runtest.Response{Stdout: out + "\n"}}
 	}
 	lvs := func(dev, out string) step {
-		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", dev), runtest.Response{Stdout: out}}
+		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "--separator", sshx.Quote("|"), "-o", "segtype,lv_size,data_percent,origin", "--", dev), runtest.Response{Stdout: out}}
 	}
 	stat := func(file, out string) step {
 		return step{remote("stat", "-L", "-c", "%b:%B:%f", "--", file), runtest.Response{Stdout: out}}
@@ -163,27 +165,34 @@ func TestVolumeUsed(t *testing.T) {
 	}{
 		"thin LV": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 57.60\n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104|57.60|\n"),
 		}, 59383935822}, // 96 GiB at 57.61 %: lvs rounds to two decimals, so 0.01 is added
 		"thin LV, full: the margin stops at 100 %": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 100.00\n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|1073741824|100.00|\n"),
 		}, 1 << 30},
 		"thin LV, comma decimal": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 50,00\n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|1073741824|50,00|\n"),
 		}, 536978287},
 		"thick LV has no data percent": {"vg:vm-200-disk-0", []step{
 			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
-			lvs("/dev/vg/vm-200-disk-0", "  linear 1073741824 \n"),
+			lvs("/dev/vg/vm-200-disk-0", "  linear|1073741824||\n"),
 		}, -1},
 		"cache LV": {"vg:vm-200-disk-0", []step{
 			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
-			lvs("/dev/vg/vm-200-disk-0", "  cache 1073741824 12.00\n"),
+			lvs("/dev/vg/vm-200-disk-0", "  cache|1073741824|12.00|\n"),
 		}, -1},
 		"inactive thin LV": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 \n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104||\n"),
+		}, -1},
+		// A thin snapshot (PVE's linked clones on LVM-thin, or an external
+		// origin) shares blocks with its origin; whether data_percent counts
+		// them is not proven, so it is not measured.
+		"thin LV with an origin": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104|10.00|base-9000-disk-0\n"),
 		}, -1},
 		"device that is not an LV": {"rbd:vm-200-disk-0", []step{
 			path("rbd:vm-200-disk-0", "/dev/rbd/pool/vm-200-disk-0"),
@@ -196,14 +205,14 @@ func TestVolumeUsed(t *testing.T) {
 		"qcow2 file": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "4194304:512:81a4\n"),
-			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "virtual-size": 103079215104}`),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", fixture(t, "qemu-img-info-plain.json")),
 		}, 2 << 30},
 		// A PVE 9 external snapshot keeps the volid but chains the file to a
 		// backing image, with no base- in the name.
 		"qcow2 file with a backing image": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
-			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "backing-filename": "snap-pre-vm-200-disk-0.qcow2"}`),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", fixture(t, "qemu-img-info-backing.json")),
 		}, -1},
 		"qcow2 that qemu-img cannot read": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
@@ -213,10 +222,20 @@ func TestVolumeUsed(t *testing.T) {
 		"qcow2 file with an external data file": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
-			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "format-specific": {"type": "qcow2", "data": {"data-file": "vm-200-disk-0.data"}}}`),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", fixture(t, "qemu-img-info-data-file.json")),
 		}, -1},
 		// A vmdk can keep its data in extent files next to a small
 		// descriptor; only formats known to hold all their data are measured.
+		"qemu-img says another format": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "raw"}`),
+		}, -1},
+		"qemu-img output is not JSON": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "image: vm-200-disk-0.qcow2\n"),
+		}, -1},
 		"vmdk file": {"local:200/vm-200-disk-0.vmdk", []step{
 			path("local:200/vm-200-disk-0.vmdk", "/var/lib/vz/images/200/vm-200-disk-0.vmdk"),
 		}, -1},
@@ -265,4 +284,14 @@ func TestVolumeUsed(t *testing.T) {
 			t.Errorf("%s: commands = %q\nwant %q", name, got, want)
 		}
 	}
+}
+
+// fixture returns testdata/name: output captured from the real tool.
+func fixture(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

@@ -224,10 +224,8 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 	// carries what it reads from the base); a ZFS clone's
 	// logicalreferenced likely includes the shared data, but it is
 	// refused too, on purpose: an over-estimate is safe, an undercount is
-	// not. LVM-thin names its clones vm-200-disk-0 like any disk, so they
-	// take the lvs path; a thin snapshot's data percent is believed to
-	// count the blocks it shares with the base (not yet checked on a real
-	// clone).
+	// not. LVM-thin names its clones vm-200-disk-0 like any disk; the lvs
+	// branch below refuses them by their origin.
 	_, name, _ := strings.Cut(volid, ":")
 	if parts := strings.Split(name, "/"); slices.ContainsFunc(parts[:len(parts)-1], func(p string) bool { return strings.HasPrefix(p, "base-") }) {
 		return 0, fmt.Errorf("%s is a linked clone: its used bytes leave out the base", volid)
@@ -254,15 +252,22 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		}
 		return n, nil
 	case strings.HasPrefix(path, "/dev/"):
-		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", path); err != nil {
+		// The separator keeps empty fields: a thick or inactive LV prints no
+		// data percent, and most LVs have no origin.
+		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "--separator", "|", "-o", "segtype,lv_size,data_percent,origin", "--", path); err != nil {
 			return 0, err
 		}
 		// Only a thin LV's data percent is the share of the volume in use;
 		// a cache LV or an old-style snapshot fills it with something else,
-		// and a thick LV prints none.
-		f := strings.Fields(out.String())
-		if len(f) != 3 || f[0] != "thin" {
+		// and a thick LV prints none. A thin LV with an origin (PVE's linked
+		// clones on LVM-thin, or an external origin) shares blocks with it,
+		// and the dump reads those too: not measured.
+		f := strings.Split(strings.TrimSpace(out.String()), "|")
+		if len(f) != 4 || f[0] != "thin" || f[2] == "" {
 			return bad("lvs")
+		}
+		if f[3] != "" {
+			return 0, fmt.Errorf("%s on %s is a thin snapshot of %s: its used bytes may leave out the origin", path, h.Target.Dest, f[3])
 		}
 		size, err := strconv.ParseInt(f[1], 10, 64)
 		if err != nil {
@@ -291,8 +296,11 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		// preallocated qcow2 is as long as the whole disk. On a compressing
 		// filesystem the blocks undercount the data, as zfs referenced
 		// would; the dump is compressed too, and the margin on top covers
-		// the difference. %f is the raw mode in hex; %F would be the file
-		// type in the host's language.
+		// the difference. The same accepted limit holds for a qcow2 with
+		// compressed clusters (qemu-img convert -c, or an imported
+		// appliance); PVE does not create those, and no cheap check finds
+		// them. %f is the raw mode in hex; %F would be the file type in
+		// the host's language.
 		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%f", "--", path); err != nil {
 			return 0, err
 		}
