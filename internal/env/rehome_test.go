@@ -68,7 +68,7 @@ func TestRehomeSuccess(t *testing.T) {
 			t.Errorf("main.tf.json lacks %s", s)
 		}
 	}
-	if len(r.hosts["pve1"].Calls())+len(r.hosts["pve2"].Calls()) != 1 { // only create's bootstrap Exec
+	if len(r.hosts["pve1"].Calls())+len(r.hosts["pve2"].Calls()) != 2 { // only create's probe and bootstrap Execs
 		t.Fatal("rehome touched a guest")
 	}
 }

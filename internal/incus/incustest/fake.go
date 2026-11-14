@@ -3,6 +3,7 @@ package incustest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -24,6 +25,10 @@ type Fake struct {
 	ExecOut  string
 	// ExecOuts, keyed by the space-joined argv, overrides ExecOut per command.
 	ExecOuts map[string]string
+	// ServerInfo is what Server returns; NetworkInfo is what Network
+	// returns, by name (a missing name is an error).
+	ServerInfo  incus.Server
+	NetworkInfo map[string]incus.Network
 
 	mu        sync.Mutex
 	calls     []string
@@ -101,4 +106,24 @@ func (f *Fake) HasNetwork(_ context.Context, network string) (bool, error) {
 		return false, err
 	}
 	return slices.Contains(f.Networks, network), nil
+}
+
+// Server implements incus.Client.
+func (f *Fake) Server(context.Context) (incus.Server, error) {
+	if err := f.record("Server"); err != nil {
+		return incus.Server{}, err
+	}
+	return f.ServerInfo, nil
+}
+
+// Network implements incus.Client.
+func (f *Fake) Network(_ context.Context, name string) (incus.Network, error) {
+	if err := f.record("Network", name); err != nil {
+		return incus.Network{}, err
+	}
+	n, ok := f.NetworkInfo[name]
+	if !ok {
+		return incus.Network{}, fmt.Errorf("network %s: not found", name)
+	}
+	return n, nil
 }

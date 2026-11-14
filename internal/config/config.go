@@ -105,6 +105,11 @@ type Host struct {
 	StoragePool string `yaml:"storage_pool"` // root disk pool (default "default")
 	Network     string `yaml:"network"`      // eth0 network; empty keeps the profile's NIC
 	Image       string `yaml:"image"`        // default images:debian/13
+
+	// Isolated: envs on this host reach the internet and the tailnet but
+	// not the LAN (private and link-local ranges, the host included),
+	// enforced on the host. Incus hosts only for now; needs network.
+	Isolated bool `yaml:"isolated"`
 }
 
 // BackendName is h's backend, proxmox when unset.

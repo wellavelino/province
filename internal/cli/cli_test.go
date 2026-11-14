@@ -75,7 +75,7 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	tmp := t.TempDir()
 	key := filepath.Join(tmp, "id.pub")
-	os.WriteFile(key, []byte("ssh-ed25519 AAAAC3Nz dev@laptop\n"), 0o600)
+	os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEIDxYdJCsyOUBHTlVcY2pxeH+GjZSboqmwt77FzNPa dev@laptop\n"), 0o600)
 	w := &world{t: t, stateDir: filepath.Join(tmp, "state"), j: &hostopstest.Journal{}, tailnet: &fakeTailnet{}}
 	w.cfgPath = filepath.Join(tmp, "province.yaml")
 	cfg := fmt.Sprintf(`state_dir: %s
@@ -538,6 +538,36 @@ func TestGuestPruneRefusesALiveEnv(t *testing.T) {
 	var doc errorDoc
 	decodeOne(t, o.stdout, &doc)
 	if o.code != 2 || !strings.Contains(doc.Error, "env destroy demo") || len(w.j.Entries()) != before {
+		t.Fatalf("%d %+v", o.code, doc)
+	}
+}
+
+func TestEnvCreateApplyRefusesTofuOutOfSync(t *testing.T) {
+	w := newWorld(t)
+	w.hosts["pve1"].ExecOut = "done?\n" // bootstrap fails, so a re-run would apply again
+	if o := w.run("--json", "env", "create", "demo", "--apply"); o.code != 1 {
+		t.Fatalf("create: %+v", o)
+	}
+	path := filepath.Join(w.stateDir, "demo", "province.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var md map[string]any
+	decodeOne(t, string(b), &md)
+	md["tofu_out_of_sync"], md["tofu_fix"] = true, []string{"tofu import proxmox_virtual_environment_container.env pve2/900"}
+	if b, err = json.Marshal(md); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.hosts["pve1"].ExecOut = "PROVINCE_TS_IP=100.64.0.7\n"
+	before := w.calls()
+	o := w.run("--json", "env", "create", "demo", "--apply")
+	var doc errorDoc
+	decodeOne(t, o.stdout, &doc)
+	if o.code != 2 || doc.Code != "refused" || !strings.Contains(doc.Error, "tofu import proxmox_virtual_environment_container.env pve2/900") || w.calls() != before {
 		t.Fatalf("%d %+v", o.code, doc)
 	}
 }

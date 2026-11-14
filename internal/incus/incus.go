@@ -18,10 +18,16 @@ import (
 // EnvKey is the instance config key province sets to the env's name.
 const EnvKey = "user.province.env"
 
+// Instance types as the server reports them.
+const (
+	TypeContainer = "container"
+	TypeVM        = "virtual-machine"
+)
+
 // Instance is one instance as the server reports it.
 type Instance struct {
 	Name   string
-	Type   string // container | virtual-machine
+	Type   string // TypeContainer | TypeVM
 	Status string // lowercase: running, stopped, frozen, error, ...
 	Env    string // config user.province.env: the env that created it, if any
 }
@@ -36,7 +42,29 @@ type Client interface {
 	HasStoragePool(ctx context.Context, pool string) (bool, error)
 	// HasNetwork reports whether the project sees network.
 	HasNetwork(ctx context.Context, network string) (bool, error)
+	// Server reports the server's API extensions and firewall driver.
+	Server(ctx context.Context) (Server, error)
+	// Network returns the network called name.
+	Network(ctx context.Context, name string) (Network, error)
 }
+
+// Server is what an Incus server reports about itself.
+type Server struct {
+	Extensions []string
+	Firewall   string // the firewall driver: nftables or xtables
+}
+
+// Network is one network as the server reports it.
+type Network struct {
+	Name    string
+	Type    string // bridge, ovn, macvlan, physical, ...
+	Managed bool
+	Config  map[string]string
+}
+
+// ExtBridgeACLDevices is the API extension for network ACLs on the NICs of
+// a bridge network (Incus 6.0.4 and 6.4 onward).
+const ExtBridgeACLDevices = "network_bridge_acl_devices"
 
 // CLI implements Client with the incus binary.
 type CLI struct {
@@ -57,7 +85,7 @@ func (c *CLI) cmd(stdin io.Reader, stdout io.Writer, args ...string) run.Cmd {
 // Exec implements Client. -T: stdin is a script, not a terminal.
 func (c *CLI) Exec(ctx context.Context, name string, stdin io.Reader, stdout io.Writer, argv ...string) error {
 	args := append([]string{"exec", c.Remote + ":" + name, "-T", "--"}, argv...)
-	if err := c.Runner.Run(ctx, c.cmd(stdin, stdout, args...)); err != nil {
+	if err := run.MarkGuest(c.Runner.Run(ctx, c.cmd(stdin, stdout, args...))); err != nil {
 		return fmt.Errorf("incus exec in %s on remote %s: %w", name, c.Remote, err)
 	}
 	return nil
@@ -122,4 +150,32 @@ func (c *CLI) HasStoragePool(ctx context.Context, pool string) (bool, error) {
 // HasNetwork implements Client.
 func (c *CLI) HasNetwork(ctx context.Context, network string) (bool, error) {
 	return c.hasNamed(ctx, "/1.0/networks", network)
+}
+
+// Server implements Client.
+func (c *CLI) Server(ctx context.Context) (Server, error) {
+	var raw struct {
+		Extensions  []string `json:"api_extensions"`
+		Environment struct {
+			Firewall string `json:"firewall"`
+		} `json:"environment"`
+	}
+	if err := c.query(ctx, "/1.0", &raw); err != nil {
+		return Server{}, err
+	}
+	return Server{Extensions: raw.Extensions, Firewall: raw.Environment.Firewall}, nil
+}
+
+// Network implements Client.
+func (c *CLI) Network(ctx context.Context, name string) (Network, error) {
+	var raw struct {
+		Name    string            `json:"name"`
+		Type    string            `json:"type"`
+		Managed bool              `json:"managed"`
+		Config  map[string]string `json:"config"`
+	}
+	if err := c.query(ctx, "/1.0/networks/"+url.PathEscape(name), &raw); err != nil {
+		return Network{}, err
+	}
+	return Network{Name: raw.Name, Type: raw.Type, Managed: raw.Managed, Config: raw.Config}, nil
 }

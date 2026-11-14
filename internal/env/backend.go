@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -55,14 +56,17 @@ type live struct {
 // notOurs is the error for a guest that sits where env md's guest should
 // be but is not it.
 func notOurs(md *Metadata, h config.Host, found, fix string) error {
-	return errs.Preflightf("%s on %s is %s, not env %s's container: province leaves it alone; %s",
-		md.guestLabel(), h.Name, found, md.Name, fix)
+	return errs.Preflightf("%s on %s is %s, not env %s's %s: province leaves it alone; %s",
+		md.guestLabel(), h.Name, found, md.Name, md.guestNoun(), fix)
 }
 
 // planned is what plan decided for a guest that does not exist yet.
 type planned struct {
 	VMID     int // Proxmox: the guest's VMID; 0 elsewhere
 	Warnings []string
+	// Gateways: Incus, isolated envs: the network's own addresses, which
+	// keep serving DNS and DHCP to the env.
+	Gateways []string
 }
 
 // backendFor returns host h's backend.
@@ -277,8 +281,9 @@ func (b incusBackend) check() error {
 	return err
 }
 
-// plan checks that the remote answers and has the pool and the network.
-func (b incusBackend) plan(ctx context.Context, _ *Metadata) (planned, error) {
+// plan checks that the remote answers and has the pool and the network,
+// and, for an isolated host, that it can enforce the env's network ACL.
+func (b incusBackend) plan(ctx context.Context, md *Metadata) (planned, error) {
 	c, err := b.client()
 	if err != nil {
 		return planned{}, err
@@ -300,15 +305,66 @@ func (b incusBackend) plan(ctx context.Context, _ *Metadata) (planned, error) {
 			return planned{}, errs.Preflightf("network %s not found on incus remote %s (see `incus network list %s:`)", h.Network, h.Remote, h.Remote)
 		}
 	}
-	return planned{}, nil
+	if !h.Isolated {
+		return planned{}, nil
+	}
+	gws, err := b.planIsolated(ctx, c, md)
+	if err != nil {
+		return planned{}, err
+	}
+	return planned{Gateways: gws}, nil
 }
 
-// mainTF carries nesting and /dev/net/tun itself, so prepare has nothing to do.
-func (b incusBackend) mainTF(md *Metadata, _ []string, _ planned) ([]byte, error) {
+// planIsolated checks that the server can enforce an ACL on the env's NIC
+// and returns the bridge's addresses, to which DNS and DHCP stay allowed.
+func (b incusBackend) planIsolated(ctx context.Context, c incus.Client, md *Metadata) ([]string, error) {
+	h := b.h
+	if n := tfgen.IncusACLName(md.Name); len(n) > 63 {
+		return nil, errs.Preflightf("host %s is isolated, and env %s's network ACL name %s would be over the 63 characters Incus allows: use an env name of at most 54 characters", h.Name, md.Name, n)
+	}
+	s, err := c.Server(ctx)
+	if err != nil {
+		return nil, &errs.Error{Kind: errs.Preflight, Err: err}
+	}
+	if !slices.Contains(s.Extensions, incus.ExtBridgeACLDevices) {
+		return nil, errs.Preflightf("host %s is isolated, but incus remote %s lacks API extension %s (network ACLs on a bridge NIC): upgrade Incus to 6.0.4 or later", h.Name, h.Remote, incus.ExtBridgeACLDevices)
+	}
+	if s.Firewall != "nftables" {
+		return nil, errs.Preflightf("host %s is isolated, but incus remote %s uses the %q firewall driver; network ACLs on a bridge NIC need nftables (install nftables on the server and restart Incus; `incus info %s:` shows the driver)", h.Name, h.Remote, s.Firewall, h.Remote)
+	}
+	n, err := c.Network(ctx, h.Network)
+	if err != nil {
+		return nil, &errs.Error{Kind: errs.Preflight, Err: err}
+	}
+	if n.Type != "bridge" || !n.Managed {
+		return nil, errs.Preflightf("host %s is isolated, but network %s on incus remote %s is a %s network (managed: %v); isolation needs a managed bridge network such as incusbr0", h.Name, h.Network, h.Remote, n.Type, n.Managed)
+	}
+	var gws []string
+	for _, k := range []string{"ipv4.address", "ipv6.address"} {
+		v := n.Config[k]
+		if v == "" || v == "none" {
+			continue
+		}
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			return nil, errs.Preflightf("network %s on incus remote %s has %s %q, not an address with a prefix length", h.Network, h.Remote, k, v)
+		}
+		gws = append(gws, p.Addr().String())
+	}
+	if len(gws) == 0 {
+		return nil, errs.Preflightf("host %s is isolated, but network %s on incus remote %s has no ipv4.address or ipv6.address: the env would have no DHCP or DNS server it may reach", h.Name, h.Network, h.Remote)
+	}
+	return gws, nil
+}
+
+// mainTF carries nesting and /dev/net/tun itself, so prepare has nothing
+// to set. A VM gets neither: it has its own kernel.
+func (b incusBackend) mainTF(md *Metadata, _ []string, p planned) ([]byte, error) {
 	return tfgen.GenerateIncus(tfgen.Incus{
 		Name: md.Name, Remote: b.h.Remote, Project: b.h.Project, Image: b.h.Image,
 		Pool: b.h.StoragePool, Network: b.h.Network, CPU: md.CPU, RAM: md.RAM, Disk: md.Disk,
-		Docker: md.Docker, TunDevice: md.Tun == config.TunDevice,
+		VM: md.vm(), Docker: md.Docker, TunDevice: !md.vm() && md.Tun == config.TunDevice,
+		Isolated: md.Isolated, Gateways: p.Gateways,
 	})
 }
 
@@ -321,14 +377,25 @@ func (b incusBackend) adopt(out map[string]json.RawMessage, md *Metadata) error 
 	return nil
 }
 
-func (incusBackend) prepare(context.Context, *Metadata) error { return nil }
+// prepare waits for a VM's incus-agent, which `incus exec` needs and which
+// comes up some seconds after boot. A container needs nothing.
+func (b incusBackend) prepare(ctx context.Context, md *Metadata) error {
+	if !md.vm() {
+		return nil
+	}
+	g, err := b.guest(md)
+	if err != nil {
+		return err
+	}
+	return b.m.waitAgent(ctx, g, md, b.h)
+}
 
 func (b incusBackend) guest(md *Metadata) (guest, error) {
 	c, err := b.client()
 	if err != nil {
 		return nil, err
 	}
-	return incusGuest{c: c, remote: b.h.Remote, name: md.Name}, nil
+	return incusGuest{c: c, remote: b.h.Remote, name: md.Name, vm: md.vm()}, nil
 }
 
 func (b incusBackend) list(ctx context.Context) ([]incus.Instance, error) {
@@ -340,19 +407,28 @@ func (b incusBackend) list(ctx context.Context) ([]incus.Instance, error) {
 }
 
 // identify finds env md's instance in list by name. in is nil when there
-// is none; err is set when it is not a container carrying the env's name
-// in user.province.env (which province's tofu config sets).
+// is none; err is set when it is not of the env's recorded kind (container
+// or VM) or does not carry the env's name in user.province.env (which
+// province's tofu config sets).
 func (b incusBackend) identify(list []incus.Instance, md *Metadata) (in *incus.Instance, err error) {
 	i := slices.IndexFunc(list, func(in incus.Instance) bool { return in.Name == md.Name })
 	if i < 0 {
 		return nil, nil
 	}
 	in = &list[i]
-	if in.Type != "virtual-machine" && in.Env == md.Name {
+	if in.Type == incusType(md) && in.Env == md.Name {
 		return in, nil
 	}
 	return in, notOurs(md, b.h, fmt.Sprintf("a %s with %s=%q", in.Type, incus.EnvKey, in.Env),
-		fmt.Sprintf("if %s's container is gone, remove %s by hand", md.Name, b.m.dir(md.Name)))
+		fmt.Sprintf("if %s's %s is gone, remove %s by hand", md.Name, md.guestNoun(), b.m.dir(md.Name)))
+}
+
+// incusType is the Incus instance type of env md's guest.
+func incusType(md *Metadata) string {
+	if md.vm() {
+		return incus.TypeVM
+	}
+	return incus.TypeContainer
 }
 
 func (b incusBackend) verify(ctx context.Context, md *Metadata) (bool, error) {
@@ -380,7 +456,7 @@ func (b incusBackend) statuses(ctx context.Context, mds []*Metadata) ([]live, er
 	out := make([]live, len(mds))
 	for i, md := range mds {
 		switch in, err := b.identify(list, md); {
-		case in == nil, in.Type == "virtual-machine": // the env's container is gone
+		case in == nil, in.Type != incusType(md): // the env's guest is gone
 			out[i] = live{Status: LiveMissing}
 		case err != nil:
 			out[i] = live{Status: LiveUnknown, Err: err}

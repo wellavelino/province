@@ -81,7 +81,7 @@ func (m *Manager) Unexpose(ctx context.Context, name string, yes bool) (*ExposeR
 		return nil, err
 	}
 	// "handler does not exist": nothing is served on 443, already off.
-	if err := g.Exec(ctx, nil, nil, unexposeArgv...); err != nil && !strings.Contains(err.Error(), "handler does not exist") {
+	if err := g.Exec(ctx, nil, nil, unexposeArgv...); err != nil && !strings.Contains(errText(err), "handler does not exist") {
 		return nil, fmt.Errorf("turning off Funnel in %s: %w", name, err)
 	}
 	md.ExposePort, md.PublicURL = 0, ""
@@ -194,8 +194,8 @@ func ownTSNetName(dns, name string) error {
 			return nil
 		}
 	}
-	return errs.Preflightf("the guest of %s reports the tailnet name %q, which is not %s's node under ts.net (want %s.<tailnet>.ts.net or %s-<n>.<tailnet>.ts.net); nothing was published or recorded",
-		name, dns, name, name, name)
+	return errs.WithGuestOutput(errs.Preflightf("the guest of %s reports a tailnet name (in the guest output) that is not %s's node under ts.net (want %s.<tailnet>.ts.net or %s-<n>.<tailnet>.ts.net); nothing was published or recorded",
+		name, name, name, name), dns)
 }
 
 func isSuffixed(label, name string) bool {
@@ -234,13 +234,19 @@ func (s *tsSelf) publicURL() string {
 // funnelDenied reports whether tailscale refused Funnel for lack of the
 // node attribute, HTTPS or an allowed port.
 func funnelDenied(err error) bool {
-	msg := err.Error()
+	msg := errText(err)
 	for _, s := range []string{"Funnel not available", "node attribute", "HTTPS must be enabled", "not allowed for funnel"} {
 		if strings.Contains(msg, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// errText is err's message and the guest output it carries, for matching
+// what tailscale printed in the guest.
+func errText(err error) string {
+	return err.Error() + "\n" + errs.GuestOutput(err)
 }
 
 func funnelHint(tag, name string, port int) string {

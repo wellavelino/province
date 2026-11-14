@@ -184,3 +184,34 @@ func TestGuestLocalesExplicit(t *testing.T) {
 		t.Fatalf("empty list: %q, %v", c.GuestLocales, err)
 	}
 }
+
+func TestIsolatedHost(t *testing.T) {
+	c, err := Load(writeYAML(t, strings.Replace(incusSite, "remote: box }", "remote: box, network: incusbr0, isolated: true }", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := c.HostByName("box"); !h.Isolated {
+		t.Fatalf("isolated not read: %+v", h)
+	}
+	if c, err := Load(writeYAML(t, incusSite)); err != nil || c.Hosts[0].Isolated {
+		t.Fatalf("isolated is not the default: %+v, %v", c, err)
+	}
+	cases := map[string]struct{ body, want string }{
+		"incus without network": {strings.Replace(incusSite, "remote: box }", "remote: box, isolated: true }", 1), "isolated needs network"},
+		"proxmox":               {strings.Replace(mustRead(t, "testdata/site.yaml"), "ssh: pve1,", "ssh: pve1, isolated: true,", 1), "isolated is not supported on proxmox hosts"},
+	}
+	for name, c := range cases {
+		if _, err := Load(writeYAML(t, c.body)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want mention of %q", name, err, c.want)
+		}
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

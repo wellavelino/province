@@ -37,6 +37,47 @@ func Preflightf(format string, a ...any) error {
 	return &Error{Kind: Preflight, Err: fmt.Errorf(format, a...)}
 }
 
+// guestError is an error whose message is province's own, with text a
+// guest produced kept beside it.
+type guestError struct {
+	err    error
+	output string
+}
+
+func (e *guestError) Error() string       { return e.err.Error() }
+func (e *guestError) Unwrap() error       { return e.err }
+func (e *guestError) GuestOutput() string { return e.output }
+
+// WithGuestOutput returns err carrying out, text a guest produced, apart
+// from its message: --json reports it as guest_output, which is data.
+func WithGuestOutput(err error, out string) error {
+	return &guestError{err: err, output: out}
+}
+
+// GuestOutput returns the first non-empty guest-produced text in err's
+// chain (see WithGuestOutput and run.ExitError), or "".
+func GuestOutput(err error) string {
+	if err == nil {
+		return ""
+	}
+	if g, ok := err.(interface{ GuestOutput() string }); ok {
+		if s := g.GuestOutput(); s != "" {
+			return s
+		}
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return GuestOutput(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if s := GuestOutput(e); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 // KindOf returns the Kind of err; untyped errors are Failed.
 func KindOf(err error) Kind {
 	var e *Error

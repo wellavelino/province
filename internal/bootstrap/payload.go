@@ -28,6 +28,9 @@ type Params struct {
 	TSSSH    bool     // tailscale up --ssh (Tailscale SSH)
 	Locales  []string // generated in the guest, e.g. en_US.UTF-8
 	AuthKey  string   // Tailscale auth key; travels only on stdin
+	// Joined says the guest is already on the tailnet (see Joined): the
+	// auth key is then not sent at all, and may be empty.
+	Joined bool
 }
 
 func (p Params) validate() error {
@@ -38,7 +41,7 @@ func (p Params) validate() error {
 		return fmt.Errorf("bootstrap: tag %q must start with \"tag:\"", p.Tag)
 	case p.Tun != "userspace" && p.Tun != "device":
 		return fmt.Errorf("bootstrap: tun %q must be userspace or device", p.Tun)
-	case p.AuthKey == "":
+	case p.AuthKey == "" && !p.Joined:
 		return errors.New("bootstrap: TS_AUTHKEY is not set")
 	}
 	return nil
@@ -46,10 +49,15 @@ func (p Params) validate() error {
 
 // Assignments renders the shell variable lines that precede the script.
 // They are plain assignments, not exports, so no child process (curl | sh
-// installers included) inherits the auth key.
+// installers included) inherits the auth key. For a joined guest
+// TS_AUTHKEY is set empty, whatever p.AuthKey holds.
 func Assignments(p Params) ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
+	}
+	key := p.AuthKey
+	if p.Joined {
+		key = ""
 	}
 	flag := func(b bool) string {
 		if b {
@@ -67,7 +75,7 @@ func Assignments(p Params) ([]byte, error) {
 		{"P_DOCKER", flag(p.Docker)},
 		{"P_TS_SSH", flag(p.TSSSH)},
 		{"P_LOCALES", strings.Join(p.Locales, "\n")},
-		{"TS_AUTHKEY", p.AuthKey},
+		{"TS_AUTHKEY", key},
 	} {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], sshx.Quote(kv[1]))
 	}

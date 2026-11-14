@@ -38,11 +38,12 @@ func (g pveGuest) Status(ctx context.Context) (string, error) {
 
 func (g pveGuest) StartHint() string { return fmt.Sprintf("`pct start %d` on %s", g.vmid, g.name) }
 
-// incusGuest is an Incus container, reached through the incus CLI.
+// incusGuest is an Incus container or VM, reached through the incus CLI.
 type incusGuest struct {
 	c      incus.Client
 	remote string
 	name   string
+	vm     bool
 }
 
 func (g incusGuest) Exec(ctx context.Context, stdin io.Reader, stdout io.Writer, argv ...string) error {
@@ -54,15 +55,20 @@ func (g incusGuest) Status(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return incusStatus(list, g.name), nil
+	typ := incus.TypeContainer
+	if g.vm {
+		typ = incus.TypeVM
+	}
+	return incusStatus(list, g.name, typ), nil
 }
 
 func (g incusGuest) StartHint() string { return fmt.Sprintf("`incus start %s:%s`", g.remote, g.name) }
 
-// incusStatus is the status of container name in list, or LiveMissing.
-func incusStatus(list []incus.Instance, name string) string {
+// incusStatus is the status of the instance of type typ named name in
+// list, or LiveMissing.
+func incusStatus(list []incus.Instance, name, typ string) string {
 	for _, in := range list {
-		if in.Name == name && in.Type != "virtual-machine" {
+		if in.Name == name && in.Type == typ {
 			return in.Status
 		}
 	}

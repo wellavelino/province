@@ -118,3 +118,16 @@ func TestExitErrorKeepsOnlyTheLastStderrLines(t *testing.T) {
 		t.Fatal("full stderr tail no longer kept on the error value")
 	}
 }
+
+func TestGuestExitErrorKeepsStderrOutOfMessage(t *testing.T) {
+	err := MarkGuest(Local{}.Run(context.Background(), Cmd{Name: "sh", Args: []string{"-c", "i=1; while [ $i -le 40 ]; do echo line$i >&2; i=$((i+1)); done; exit 1"}}))
+	if msg := err.Error(); strings.Contains(msg, "line40") || !strings.HasSuffix(msg, "exit status 1") {
+		t.Fatalf("message = %q", msg)
+	}
+	var ee *ExitError
+	errors.As(err, &ee)
+	out := ee.GuestOutput()
+	if !strings.HasPrefix(out, "(25 earlier stderr lines omitted)\nline26\n") || !strings.HasSuffix(out, "line40") {
+		t.Fatalf("guest output = %q", out)
+	}
+}

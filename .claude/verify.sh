@@ -42,4 +42,11 @@ else
   echo "staticcheck: not on PATH, skipped"
 fi
 
+step "govulncheck"
+if command -v govulncheck >/dev/null 2>&1; then
+  govulncheck ./...
+else
+  echo "govulncheck: not on PATH, skipped"
+fi
+
 echo "verify: all checks passed"

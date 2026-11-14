@@ -118,6 +118,9 @@ func validateProxmoxHost(h Host, where string, add func(string, ...any)) {
 	if h.Remote != "" || h.Project != "" || h.StoragePool != "" || h.Network != "" || h.Image != "" {
 		add("%s: remote, project, storage_pool, network and image are incus settings; this host's backend is proxmox", where)
 	}
+	if h.Isolated {
+		add("%s: isolated is not supported on proxmox hosts yet (only on incus hosts)", where)
+	}
 }
 
 func validateIncusHost(h Host, where string, add func(string, ...any)) {
@@ -128,6 +131,9 @@ func validateIncusHost(h Host, where string, add func(string, ...any)) {
 		if v != "" && !incusNameRE.MatchString(v) {
 			add("%s: %s %q is not a valid Incus name", where, k, v)
 		}
+	}
+	if h.Isolated && h.Network == "" {
+		add("%s: isolated needs network: the Incus bridge network eth0 is attached to (e.g. incusbr0), so the ACL can be set on that NIC", where)
 	}
 	if strings.ContainsAny(h.Image, " \t\n") {
 		add("%s: image %q must not contain spaces", where, h.Image)

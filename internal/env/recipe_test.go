@@ -36,7 +36,7 @@ func TestCreatePlanShowsRecipeAndRecordsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"pve1 Exec 105 bash -s", "pve1 Exec 105 bash -s"} // bootstrap, then recipe
+	want := []string{"pve1 Exec 105 sh -c tailscale ip -4 2>/dev/null || true", "pve1 Exec 105 bash -s", "pve1 Exec 105 bash -s"} // probe, bootstrap, then recipe
 	var execs []string
 	for _, e := range r.j.Entries() {
 		if strings.HasPrefix(e, "pve1 Exec") {
@@ -47,7 +47,7 @@ func TestCreatePlanShowsRecipeAndRecordsIt(t *testing.T) {
 		t.Fatalf("execs = %v, recipe = %+v", execs, res.Recipe)
 	}
 	stdins := r.hosts["pve1"].ExecStdins()
-	if len(stdins) != 2 || !strings.Contains(stdins[1], "P_TOOLS=go@1.24\n") || strings.Contains(stdins[1], authKey) {
+	if len(stdins) != 3 || !strings.Contains(stdins[2], "P_TOOLS=go@1.24\n") || strings.Contains(stdins[2], authKey) {
 		t.Fatalf("recipe payload wrong or carries the auth key")
 	}
 }
@@ -87,7 +87,7 @@ func TestCreateRecipeFailureIsFailedAndNamesProvision(t *testing.T) {
 	n := 0
 	r.hosts["pve1"].Fail = func(call string) error {
 		if strings.HasPrefix(call, "pve1 Exec") {
-			if n++; n == 2 {
+			if n++; n == 3 { // the probe, the bootstrap, the recipe
 				return errors.New("apt-get: unable to locate package")
 			}
 		}

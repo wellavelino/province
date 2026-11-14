@@ -62,7 +62,7 @@ func TestIncusCreateNeedsNoProxmoxToken(t *testing.T) {
 	if !slices.Equal(w.tofuTok, []string{""}) {
 		t.Fatalf("tofu tokens = %q, want one empty", w.tofuTok)
 	}
-	if calls := box.Calls(); len(calls) != 3 || calls[1] != "box Exec api bash -s" || calls[2] != "box Exec api bash -s" {
+	if calls := box.Calls(); len(calls) != 4 || calls[1] != "box Exec api sh -c tailscale ip -4 2>/dev/null || true" || calls[2] != "box Exec api bash -s" || calls[3] != "box Exec api bash -s" {
 		t.Fatalf("incus calls = %v", calls)
 	}
 }
@@ -96,5 +96,38 @@ func TestGuestMoveRefusesIncusHosts(t *testing.T) {
 	}
 	if w.calls() != 0 {
 		t.Fatalf("calls: %v", w.j.Entries())
+	}
+}
+
+func TestKindVMOnIncusAndRefusedOnProxmox(t *testing.T) {
+	w, d, box := incusWorld(t)
+	o := runCLI(t, d, "env", "create", "api", "--host", "box", "--kind", "vm", "--apply", "--json")
+	if o.code != 0 {
+		t.Fatalf("%+v", o)
+	}
+	var res struct {
+		Kind     string `json:"kind"`
+		Instance string `json:"instance"`
+	}
+	decodeOne(t, o.stdout, &res)
+	if res.Kind != "vm" || res.Instance != "api" {
+		t.Fatalf("result = %+v", res)
+	}
+	if calls := box.Calls(); !slices.Contains(calls, "box Exec api true") {
+		t.Fatalf("no agent wait: %v", calls)
+	}
+
+	before := len(w.j.Entries())
+	o = runCLI(t, d, "--json", "env", "create", "web", "--host", "pve1", "--kind", "vm")
+	if o.code != 2 {
+		t.Fatalf("exit = %d, want 2: %+v", o.code, o)
+	}
+	var doc map[string]string
+	decodeOne(t, o.stdout, &doc)
+	if doc["code"] != "refused" || !strings.Contains(doc["error"], "needs a cloud-init template with qemu-guest-agent (planned)") {
+		t.Fatalf("error doc = %v", doc)
+	}
+	if len(w.j.Entries()) != before {
+		t.Fatalf("calls after refusal: %v", w.j.Entries()[before:])
 	}
 }

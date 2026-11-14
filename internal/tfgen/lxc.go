@@ -45,13 +45,13 @@ type terraform struct {
 }
 
 type requiredProvider struct {
-	Source  string `json:"source"`
-	Version string `json:"version"`
+	Source  lit `json:"source"`
+	Version lit `json:"version"`
 }
 
 type provider struct {
-	Endpoint string `json:"endpoint"`
-	Insecure bool   `json:"insecure"`
+	Endpoint lit  `json:"endpoint"`
+	Insecure bool `json:"insecure"`
 }
 
 type resources struct {
@@ -59,10 +59,10 @@ type resources struct {
 }
 
 type container struct {
-	NodeName         string             `json:"node_name"`
+	NodeName         lit                `json:"node_name"`
 	VMID             int                `json:"vm_id,omitempty"`
-	Description      string             `json:"description"`
-	Tags             []string           `json:"tags"`
+	Description      lit                `json:"description"`
+	Tags             []lit              `json:"tags"`
 	Unprivileged     bool               `json:"unprivileged"`
 	StartOnBoot      bool               `json:"start_on_boot"`
 	Started          bool               `json:"started"`
@@ -81,8 +81,8 @@ type features struct {
 }
 
 type operatingSystem struct {
-	TemplateFileID string `json:"template_file_id"`
-	Type           string `json:"type"`
+	TemplateFileID lit `json:"template_file_id"`
+	Type           lit `json:"type"`
 }
 
 type cpu struct {
@@ -95,17 +95,17 @@ type memory struct {
 }
 
 type disk struct {
-	DatastoreID string `json:"datastore_id"`
-	Size        int    `json:"size"`
+	DatastoreID lit `json:"datastore_id"`
+	Size        int `json:"size"`
 }
 
 type networkInterface struct {
-	Name   string `json:"name"`
-	Bridge string `json:"bridge"`
+	Name   lit `json:"name"`
+	Bridge lit `json:"bridge"`
 }
 
 type initialization struct {
-	Hostname    string      `json:"hostname"`
+	Hostname    lit         `json:"hostname"`
 	IPConfig    []ipConfig  `json:"ip_config"`
 	UserAccount userAccount `json:"user_account"`
 }
@@ -115,45 +115,45 @@ type ipConfig struct {
 }
 
 type ipv4 struct {
-	Address string `json:"address"`
+	Address lit `json:"address"`
 }
 
 type userAccount struct {
-	Keys []string `json:"keys"`
+	Keys []lit `json:"keys"`
 }
 
 type lifecycle struct {
-	IgnoreChanges []string `json:"ignore_changes"`
+	IgnoreChanges []expr `json:"ignore_changes"`
 }
 
 type output struct {
-	Value string `json:"value"`
+	Value expr `json:"value"`
 }
 
 // Generate renders main.tf.json for l.
 func Generate(l LXC) ([]byte, error) {
 	c := container{
-		NodeName:     l.Node,
+		NodeName:     lit(l.Node),
 		VMID:         l.VMID,
-		Description:  "Managed by province (env " + l.Name + ")",
-		Tags:         []string{"province"},
+		Description:  lit("Managed by province (env " + l.Name + ")"),
+		Tags:         []lit{"province"},
 		Unprivileged: true,
 		StartOnBoot:  true,
 		Started:      true,
 		// nesting: systemd in recent templates needs it (the PVE UI default).
 		Features:         features{Nesting: true},
-		OperatingSystem:  operatingSystem{TemplateFileID: l.Template, Type: OSType(l.Template)},
+		OperatingSystem:  operatingSystem{TemplateFileID: lit(l.Template), Type: lit(OSType(l.Template))},
 		CPU:              cpu{Cores: l.CPU},
 		Memory:           memory{Dedicated: l.RAM, Swap: 512},
-		Disk:             disk{DatastoreID: l.Storage, Size: l.Disk},
-		NetworkInterface: []networkInterface{{Name: "eth0", Bridge: l.Bridge}},
+		Disk:             disk{DatastoreID: lit(l.Storage), Size: l.Disk},
+		NetworkInterface: []networkInterface{{Name: "eth0", Bridge: lit(l.Bridge)}},
 		Initialization: initialization{
-			Hostname:    l.Name,
+			Hostname:    lit(l.Name),
 			IPConfig:    []ipConfig{{IPv4: ipv4{Address: "dhcp"}}},
-			UserAccount: userAccount{Keys: l.Keys},
+			UserAccount: userAccount{Keys: lits(l.Keys)},
 		},
 	}
-	var ignore []string
+	var ignore []expr
 	if l.Docker {
 		ignore = append(ignore, "features")
 	}
@@ -165,11 +165,11 @@ func Generate(l LXC) ([]byte, error) {
 	}
 	f := file{
 		Terraform: terraform{RequiredProviders: map[string]requiredProvider{
-			"proxmox": {Source: "bpg/proxmox", Version: ProviderVersion},
+			"proxmox": {Source: "bpg/proxmox", Version: lit(ProviderVersion)},
 		}},
-		Provider: map[string]provider{"proxmox": {Endpoint: l.Endpoint, Insecure: l.Insecure}},
+		Provider: map[string]provider{"proxmox": {Endpoint: lit(l.Endpoint), Insecure: l.Insecure}},
 		Resource: resources{Container: map[string]container{"env": c}},
-		Output:   map[string]output{"vmid": {Value: "${" + ResourceAddress + ".vm_id}"}},
+		Output:   map[string]output{"vmid": {Value: expr("${" + ResourceAddress + ".vm_id}")}},
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
