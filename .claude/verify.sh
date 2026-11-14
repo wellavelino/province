@@ -19,6 +19,9 @@ go vet ./...
 step "go build"
 go build ./...
 
+step "go vet -tags integration,bench (compiles the tagged tests without running them)"
+go vet -tags integration,bench ./internal/bootstrap/
+
 step "go mod tidy -diff"
 go mod tidy -diff
 
