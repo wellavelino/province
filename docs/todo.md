@@ -72,6 +72,7 @@ Long-lived is already the default: an env stays until it is destroyed and starts
 
 - [x] `--ttl 24h`: recorded with the env; `env list` shows what has expired and `env gc --yes` destroys it. No daemon: run `env gc` from cron or an agent.
 - [x] `--protect`: `env destroy` refuses until the flag is removed.
+- [ ] A per-env lock shared by `env create --apply`, `env destroy`/`env gc` and `env protect` (for example `flock` on a file in the env's state dir). Today `env gc` rechecks expiry and protection on the freshly loaded record just before destroying, but nothing stops an `env create --apply --ttl` in another process from renewing the env between that check and the destroy. Decide whether a busy env is skipped (gc) and refused (destroy), or waited for.
 
 Backups of long-lived envs stay with the platform (Proxmox backup jobs, `incus export`).
 
