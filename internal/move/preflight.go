@@ -208,22 +208,11 @@ func (m *Mover) preflight(ctx context.Context, o Opts) (*plan, error) {
 		return nil, errs.Preflightf("target storage %s on %s has %s free, guest %d needs %s", p.storage, to.Name, gib(st.Avail), o.VMID, gib(p.total))
 	}
 
-	// A zstd vzdump holds only used data. PVE reports used bytes for a
-	// running container; otherwise (stopped, or a VM, which reports 0)
-	// fall back to the allocated size. An API error also falls back: the
-	// estimate only ever gets more conservative.
-	dumpNeed, basis := p.total, "allocated "+gib(p.total)
-	if p.typ == proxmox.TypeLXC {
-		if used, err := srcAPI.GuestDiskUsed(ctx, from.Node, p.typ, o.VMID); err == nil && used > 0 {
-			dumpNeed = used + used/10 + 1<<30
-			basis = fmt.Sprintf("used %s → needs %s", gib(used), gib(dumpNeed))
-		}
-	}
-
 	// SSH reads: prove both hosts answer (and sudo works) before the first change.
 	if _, err := p.src.Status(ctx, p.typ, o.VMID); err != nil {
 		return nil, preflightErr(err)
 	}
+	dumpNeed, basis := m.dumpEstimate(ctx, srcAPI, p, o.VMID, disks)
 	avail, err := p.dst.DfAvail(ctx, to.DumpDir)
 	if err != nil {
 		return nil, preflightErr(err)
@@ -250,4 +239,46 @@ func (m *Mover) preflight(ctx context.Context, o Opts) (*plan, error) {
 		p.restoreCmd = fmt.Sprintf("`pct restore %d %s --storage %s`", p.targetID, p.dumpPath, p.storage)
 	}
 	return p, nil
+}
+
+// dumpEstimate is how much room the dump may need in dump_dir, and the
+// basis to name in a refusal. A zstd vzdump holds only used data. PVE
+// reports used bytes for a running container; otherwise (stopped, or a
+// VM, which reports 0) each disk is measured on the source host. A disk
+// that cannot be measured counts at its allocated size, and an estimate
+// above the allocated total gives way to it, since the dump cannot be
+// bigger than the disks: the estimate is never above the old one.
+func (m *Mover) dumpEstimate(ctx context.Context, srcAPI proxmox.Client, p *plan, vmid int, disks []proxmox.Disk) (int64, string) {
+	allocated := "allocated " + gib(p.total)
+	var used int64
+	var unmeasured []string
+	if p.typ == proxmox.TypeLXC {
+		// An API error falls through to measuring, like a 0.
+		if n, err := srcAPI.GuestDiskUsed(ctx, p.from.Node, p.typ, vmid); err == nil && n > 0 {
+			used = n
+		}
+	}
+	if used == 0 {
+		for _, d := range disks {
+			n, err := p.src.VolumeUsed(ctx, d.Volume)
+			if err != nil {
+				m.logf("could not measure %s (%s) on %s, counting its allocated size: %v", d.Key, d.Volume, p.from.Name, err)
+				n = d.Size
+				unmeasured = append(unmeasured, d.Key)
+			}
+			used += n
+		}
+		if len(unmeasured) == len(disks) {
+			return p.total, allocated
+		}
+	}
+	need := used + used/10 + 1<<30
+	if need >= p.total {
+		return p.total, allocated
+	}
+	basis := "used " + gib(used)
+	if len(unmeasured) > 0 {
+		basis += ", counting " + strings.Join(unmeasured, ", ") + " at allocated size"
+	}
+	return need, basis + " → needs " + gib(need)
 }

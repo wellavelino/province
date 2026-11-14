@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,10 @@ type Host interface {
 	Restore(ctx context.Context, typ string, vmid int, archive, storage string) error
 	// Destroy deletes the guest and its disks (pct|qm destroy vmid --purge).
 	Destroy(ctx context.Context, typ string, vmid int) error
+	// VolumeUsed measures the bytes a volume holds on this host. It errors
+	// on any volume it cannot measure, so the caller can fall back to the
+	// allocated size.
+	VolumeUsed(ctx context.Context, volid string) (int64, error)
 }
 
 // SSHHost implements Host with the system ssh binary.
@@ -198,4 +203,70 @@ func (h *SSHHost) Restore(ctx context.Context, typ string, vmid int, archive, st
 // Destroy implements Host.
 func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 	return h.guest(ctx, typ, "destroy", vmid, "--purge")
+}
+
+// VolumeUsed implements Host. pvesm resolves the volume to a path, and the
+// path says how to measure it: a zvol through zfs, any other device as a
+// thin LV through lvs, a regular file by its allocated blocks. Anything
+// else (a directory, a remote path, a thick LV) is an error. The PVE API
+// reports no used figure for these volumes, so the host is asked.
+func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
+	var out bytes.Buffer
+	if err := h.run(ctx, &out, "pvesm", "path", volid); err != nil {
+		return 0, err
+	}
+	path := strings.TrimSpace(out.String())
+	bad := func(cmd string) (int64, error) {
+		return 0, fmt.Errorf("%s %s on %s: cannot measure from %q", cmd, path, h.Target.Dest, strings.TrimSpace(out.String()))
+	}
+	out.Reset()
+	switch {
+	case strings.HasPrefix(path, "/dev/zvol/"):
+		// logicalreferenced counts the data before pool compression; the
+		// dump reads it uncompressed, so this is the safer figure.
+		if err := h.run(ctx, &out, "zfs", "get", "-Hp", "-o", "value", "logicalreferenced", strings.TrimPrefix(path, "/dev/zvol/")); err != nil {
+			return 0, err
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(out.String()), 10, 64)
+		if err != nil || n < 0 {
+			return bad("zfs get")
+		}
+		return n, nil
+	case strings.HasPrefix(path, "/dev/"):
+		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size,data_percent", "--", path); err != nil {
+			return 0, err
+		}
+		// A thick LV prints no data percent: its used bytes are unknown.
+		f := strings.Fields(out.String())
+		if len(f) != 2 {
+			return bad("lvs")
+		}
+		size, err := strconv.ParseInt(f[0], 10, 64)
+		if err != nil {
+			return bad("lvs")
+		}
+		// lvs may print the percent with a decimal comma under some locales.
+		pct, err := strconv.ParseFloat(strings.Replace(f[1], ",", ".", 1), 64)
+		if err != nil || pct < 0 || pct > 100 {
+			return bad("lvs")
+		}
+		return int64(math.Ceil(float64(size) * pct / 100)), nil
+	case strings.HasPrefix(path, "/"):
+		// Allocated blocks, not the apparent size: a sparse raw file or a
+		// preallocated qcow2 is as long as the whole disk.
+		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%F", "--", path); err != nil {
+			return 0, err
+		}
+		f := strings.SplitN(strings.TrimSpace(out.String()), ":", 3)
+		if len(f) != 3 || f[2] != "regular file" {
+			return bad("stat")
+		}
+		blocks, err1 := strconv.ParseInt(f[0], 10, 64)
+		bsize, err2 := strconv.ParseInt(f[1], 10, 64)
+		if err1 != nil || err2 != nil || blocks < 0 || bsize <= 0 {
+			return bad("stat")
+		}
+		return blocks * bsize, nil
+	}
+	return 0, fmt.Errorf("pvesm path %s on %s: %q is not a local path", volid, h.Target.Dest, path)
 }

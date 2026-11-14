@@ -46,6 +46,7 @@ type Disk struct {
 	Key     string
 	Storage string
 	Size    int64
+	Volume  string // the volid, e.g. local-lvm:vm-200-disk-0
 }
 
 // options splits "vol,k=v,k=v" into the volume and its options.
@@ -67,7 +68,8 @@ func options(v string) (string, map[string]string) {
 }
 
 // Disks lists the guest's storage-backed volumes, sorted by key. CD-ROMs,
-// "none" drives and bind mounts (no storage, no size) are skipped.
+// "none" drives and bind mounts (no storage, no size) are skipped, and so
+// are unusedN volumes, which vzdump does not back up.
 func Disks(conf map[string]string) ([]Disk, error) {
 	var out []Disk
 	for k, v := range conf {
@@ -94,7 +96,7 @@ func Disks(conf map[string]string) ([]Disk, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", k, err)
 		}
-		out = append(out, Disk{Key: k, Storage: storage, Size: n})
+		out = append(out, Disk{Key: k, Storage: storage, Size: n, Volume: vol})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
