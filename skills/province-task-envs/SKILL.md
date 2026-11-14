@@ -32,7 +32,7 @@ Run small, trusted commands (reading files, `git log`, formatting) where you are
 
 Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so `province env gc --yes` removes an env a crashed session forgot. Never pass `--protect` to a task env. Check with `province env create --help`; do not invent flags.
 
-Rely on `isolated: true` in the tasks host config (no LAN access, enforced on the host; Incus hosts only for now). `province env show "$name" --json` has `"isolated": true` for such an env; if it is missing, tell the owner the env can reach the LAN and the hosts on it.
+Rely on `isolated: true` in the tasks host config (no LAN access, enforced on the host; Incus hosts only for now). `province env show "$name" --json` has `"isolated": true` for such an env. If it is missing, **stop**: the env can reach the LAN and the hosts on it, so run no untrusted code there. Destroy the env and ask the owner; run trusted work in it only with the owner's approval.
 
 ## The loop
 
@@ -49,15 +49,20 @@ Do the work over the `ssh` line from `env show` (for example `ssh dev@task-1a2b3
 
 ```
 ssh dev@$name 'git clone <repo> work && cd work && <command>' > result.log 2>&1
-scp dev@$name:work/<artifact> ./results/$name/
+mkdir -p "./results/$name"
+scp "dev@$name:work/<artifact>" "./results/$name/" ||
+  scp "dev@$name:work/<artifact>" "./results/$name/"    # one retry
 ```
+
+Check scp's exit status. If the copy still fails after the retry, tell the owner before destroying the env (the env may hold the only copy), then destroy it anyway: rule 3 stands.
 
 Then always:
 
 ```
-province env destroy "$name" --yes --json
-sed -i "/^$name\$/d" ~/.province-tasks
+province env destroy "$name" --yes --json && sed -i "/^$name\$/d" ~/.province-tasks
 ```
+
+Remove the name from `~/.province-tasks` only once the destroy succeeded. If it fails, keep the entry (the crash cleanup below relies on it) and report the error to the owner.
 
 A recipe failure during `--apply` exits 1 but leaves the env bootstrapped: either fix the recipe line (ask the owner) or destroy the env. Do not install tools by hand to get past it.
 
