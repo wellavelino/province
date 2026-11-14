@@ -195,10 +195,12 @@ func TestVolumeUsed(t *testing.T) {
 			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104|10.00|base-9000-disk-0\n"),
 		}, -1},
 		// segtype prints one row per segment, so a multi-segment LV gives
-		// several rows; none of them is the whole volume.
-		"multi-segment LV": {"vg:vm-200-disk-0", []step{
-			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
-			lvs("/dev/vg/vm-200-disk-0", "  linear|1073741824||\n  linear|1073741824||\n"),
+		// several rows; none of them is the whole volume. The rows would
+		// each pass alone (synthetic: a real thin LV has one segment), so
+		// only the row count refuses them.
+		"several rows": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104|10.00|\n  thin|103079215104|10.00|\n"),
 		}, -1},
 		"device that is not an LV": {"rbd:vm-200-disk-0", []step{
 			path("rbd:vm-200-disk-0", "/dev/rbd/pool/vm-200-disk-0"),
