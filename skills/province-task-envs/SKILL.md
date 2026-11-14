@@ -61,13 +61,19 @@ scp "dev@$name:work/<artifact>" "./results/$name/" ||
 Check scp's exit status. If the copy still fails after the retry, do not destroy the env: it may hold the only copy. Hold it instead:
 
 ```
-track "echo '$name $session' >> ~/.province-held" ||
-  { province env protect "$name" --json; echo "could not record the hold for $name: protected it instead; stop and tell the owner"; exit 1; }
-track "sed -i '/^$name /d' ~/.province-tasks"
+if ! track "echo '$name $session' >> ~/.province-held"; then
+  if province env protect "$name" --json; then
+    echo "could not record the hold for $name: protected it instead; stop and tell the owner"
+  else
+    echo "could not record the hold for $name and could not protect it: $name is UNPROTECTED; stop, tell the owner, keep this session open"
+  fi
+  exit 1
+fi
+track "sed -i '/^$name /d' ~/.province-tasks" || echo "$name is held but still listed in ~/.province-tasks; tell the owner (held wins, so cleanup keeps it)"
 province env show "$name" --json   # note expires_at
 ```
 
-Report the env as held only once its line is in `~/.province-held`. If that write fails, protect the env as above: protection lives in province's own record, so `env destroy`, crash cleanup and `env gc` all refuse the env until the owner runs `province env protect "$name" --off`. Tell the owner the env is protected and why; never remove the protection yourself. Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
+Report the env as held only once its line is in `~/.province-held`. If that write fails, protect the env as above: protection lives in province's own record, so `env destroy`, crash cleanup and `env gc` all refuse the env until the owner runs `province env protect "$name" --off`. Tell the owner the env is protected and why; never remove the protection yourself. If protecting it fails too, say plainly that the env is unprotected and do not end this session until the owner answers: while your session runs, no crash cleanup destroys your entries (cleanup only takes entries of sessions that have ended), but a later `env gc --yes` still could, so ask the owner to protect or copy it. Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
 
 Otherwise, once the results are copied, always:
 
