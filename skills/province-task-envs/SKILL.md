@@ -30,7 +30,7 @@ Run small, trusted commands (reading files, `git log`, formatting) where you are
 - **Container** (default): starts in seconds. Fine for your own code and trusted dependencies.
 - **VM** (`--kind vm`, Incus hosts only): its own kernel, boots in 10–30 s (province waits for the VM's agent before the bootstrap). Use it for untrusted code. If `--kind vm` is refused (exit 2: a Proxmox host, or `tailscale.tun: device` in the site config), use a container and tell the owner the work ran without a VM boundary.
 
-Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so the env shows as expired once it outlives its job. A ttl only marks the env: it is removed when someone runs `province env gc --yes` (the owner, a cron job, or you). Run `env gc --yes` only when the owner asked, and never while you hold an env (see the loop). Never pass `--protect` to a task env. Check with `province env create --help`; do not invent flags.
+Also pass `--ttl 2h` to `env create` (on both the plan and the `--apply` run), so the env shows as expired once it outlives its job. A ttl only marks the env: it is removed when someone runs `province env gc --yes` (the owner, a cron job, or you). Run `env gc --yes` only when the owner asked, and never while you hold an env (see the loop). Never pass `--protect` to a task env; the one exception is a held env whose hold could not be recorded (see the loop). Check with `province env create --help`; do not invent flags.
 
 Rely on `isolated: true` in the tasks host config (no LAN access, enforced on the host; Incus hosts only for now). That guarantee holds only if the Incus host does not hand the env a way into the LAN through its own tailnet connection: if the Incus host runs Tailscale, its tailnet grants must not reach LAN hosts or tailnet peers the env must not touch, such as the agent-host env and the owner's own devices (see `docs/incus.md`, "Isolated envs"); if you cannot tell, ask the owner before running untrusted code. `province env show "$name" --json` has `"isolated": true` for such an env. If it is missing, **stop**: the env can reach the LAN and the hosts on it, so run no untrusted code there. Destroy the env and ask the owner; run trusted work in it only with the owner's approval.
 
@@ -61,12 +61,13 @@ scp "dev@$name:work/<artifact>" "./results/$name/" ||
 Check scp's exit status. If the copy still fails after the retry, do not destroy the env: it may hold the only copy. Hold it instead:
 
 ```
-track "echo '$name $session' >> ~/.province-held" || { echo "could not hold $name: stop, keep the env, tell the owner"; exit 1; }
+track "echo '$name $session' >> ~/.province-held" ||
+  { province env protect "$name" --json; echo "could not record the hold for $name: protected it instead; stop and tell the owner"; exit 1; }
 track "sed -i '/^$name /d' ~/.province-tasks"
 province env show "$name" --json   # note expires_at
 ```
 
-Report the env as held only once its line is in `~/.province-held`. Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
+Report the env as held only once its line is in `~/.province-held`. If that write fails, protect the env as above: protection lives in province's own record, so `env destroy`, crash cleanup and `env gc` all refuse the env until the owner runs `province env protect "$name" --off`. Tell the owner the env is protected and why; never remove the protection yourself. Tell the owner which env is held, why, and its `expires_at` (after that, any `env gc --yes` destroys it; the owner can keep it longer with `province env protect`). Then wait for their answer: copy by hand, or destroy. Destroy a held env only on the owner's answer, and remove it from `~/.province-held` once the destroy succeeded.
 
 Otherwise, once the results are copied, always:
 
