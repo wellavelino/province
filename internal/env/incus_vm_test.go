@@ -67,12 +67,12 @@ func TestWaitAgentCountsExecTime(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "did not answer within 10s") {
 		t.Fatalf("err = %v", err)
 	}
-	// Tries at 0 s (until 3), 5 (until 8), 10 (until 13): the last
-	// pause is cut to the 2 s left.
+	// Tries at 0 s (until 3) and 5 (until 8); the last pause is cut to
+	// the 2 s left, and no try starts at the 10 s deadline.
 	if !slices.Equal(sleeps, []time.Duration{2 * time.Second, 2 * time.Second}) {
 		t.Errorf("sleeps = %v", sleeps)
 	}
-	if !slices.Equal(g.allowed, []time.Duration{10 * time.Second, 5 * time.Second, time.Second}) {
+	if !slices.Equal(g.allowed, []time.Duration{10 * time.Second, 5 * time.Second}) {
 		t.Errorf("exec timeouts = %v", g.allowed)
 	}
 }
@@ -120,7 +120,7 @@ func TestIncusVMAgentTimeout(t *testing.T) {
 	r := newRig(t)
 	box := withIncus(t, r)
 	sleeps := withSleeps(t, r)
-	r.m.AgentTimeout = 6 * time.Second // tries at 0, 2, 4 and 6 s
+	r.m.AgentTimeout = 6 * time.Second // tries at 0, 2 and 4 s; none starts at the 6 s deadline
 	box.Fail = func(call string) error {
 		if call == "box Exec api true" {
 			return errors.New("Error: VM agent isn't currently running")
@@ -140,7 +140,7 @@ func TestIncusVMAgentTimeout(t *testing.T) {
 			t.Fatal("bootstrap ran without the agent")
 		}
 	}
-	if n != 4 || len(*sleeps) != 3 {
+	if n != 3 || len(*sleeps) != 3 {
 		t.Fatalf("%d tries, sleeps %v", n, *sleeps)
 	}
 	if md := r.metadata(t, "api"); md.Status != StatusBootstrapFailed || md.Kind != KindVM {

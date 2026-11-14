@@ -416,9 +416,10 @@ func (m *Manager) waitAgent(ctx context.Context, g guest, md *Metadata, h config
 	}
 	deadline := now().Add(timeout)
 	m.logf("waiting for the guest agent in %s (%s)", md.Name, md.guestRef(h))
+	// No exec starts at or after the deadline, and each one may run only
+	// for the time left, so the wait ends within timeout.
 	for {
-		// At least a second, so the try at the deadline is a real one.
-		execCtx, cancel := context.WithTimeout(ctx, max(deadline.Sub(now()), time.Second))
+		execCtx, cancel := context.WithTimeout(ctx, deadline.Sub(now()))
 		err := g.Exec(execCtx, nil, nil, "true")
 		cancel()
 		if err == nil {
@@ -428,11 +429,14 @@ func (m *Manager) waitAgent(ctx context.Context, g guest, md *Metadata, h config
 			return ctx.Err()
 		}
 		left := deadline.Sub(now())
+		if left > 0 {
+			if err := sleep(ctx, min(agentPoll, left)); err != nil {
+				return err
+			}
+			left = deadline.Sub(now())
+		}
 		if left <= 0 {
 			return fmt.Errorf("the guest agent in VM %s did not answer within %s (is it running? see `incus info %s:%s`): %w", md.Name, timeout, h.Remote, md.Name, err)
-		}
-		if err := sleep(ctx, min(agentPoll, left)); err != nil {
-			return err
 		}
 	}
 }
