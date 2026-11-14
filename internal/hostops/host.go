@@ -241,20 +241,22 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		}
 		return n, nil
 	case strings.HasPrefix(path, "/dev/"):
-		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size,data_percent", "--", path); err != nil {
+		if err := h.run(ctx, &out, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", path); err != nil {
 			return 0, err
 		}
-		// A thick LV prints no data percent: its used bytes are unknown.
+		// Only a thin LV's data percent is the share of the volume in use;
+		// a cache LV or an old-style snapshot fills it with something else,
+		// and a thick LV prints none.
 		f := strings.Fields(out.String())
-		if len(f) != 2 {
+		if len(f) != 3 || f[0] != "thin" {
 			return bad("lvs")
 		}
-		size, err := strconv.ParseInt(f[0], 10, 64)
+		size, err := strconv.ParseInt(f[1], 10, 64)
 		if err != nil {
 			return bad("lvs")
 		}
 		// lvs may print the percent with a decimal comma under some locales.
-		pct, err := strconv.ParseFloat(strings.Replace(f[1], ",", ".", 1), 64)
+		pct, err := strconv.ParseFloat(strings.Replace(f[2], ",", ".", 1), 64)
 		if err != nil || pct < 0 || pct > 100 {
 			return bad("lvs")
 		}

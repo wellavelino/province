@@ -148,7 +148,7 @@ func TestVolumeUsed(t *testing.T) {
 		return step{remote("pvesm", "path", volid), runtest.Response{Stdout: out + "\n"}}
 	}
 	lvs := func(dev, out string) step {
-		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size,data_percent", "--", dev), runtest.Response{Stdout: out}}
+		return step{remote("lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "segtype,lv_size,data_percent", "--", dev), runtest.Response{Stdout: out}}
 	}
 	stat := func(file, out string) step {
 		return step{remote("stat", "-L", "-c", "%b:%B:%F", "--", file), runtest.Response{Stdout: out}}
@@ -160,15 +160,23 @@ func TestVolumeUsed(t *testing.T) {
 	}{
 		"thin LV": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  103079215104 57.60\n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 57.60\n"),
 		}, 59373627900}, // 96 GiB at 57.60 %, rounded up
 		"thin LV, comma decimal": {"local-lvm:vm-200-disk-0", []step{
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
-			lvs("/dev/pve/vm-200-disk-0", "  1073741824 50,00\n"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 1073741824 50,00\n"),
 		}, 1 << 29},
 		"thick LV has no data percent": {"vg:vm-200-disk-0", []step{
 			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
-			lvs("/dev/vg/vm-200-disk-0", "  1073741824 \n"),
+			lvs("/dev/vg/vm-200-disk-0", "  linear 1073741824 \n"),
+		}, -1},
+		"cache LV": {"vg:vm-200-disk-0", []step{
+			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
+			lvs("/dev/vg/vm-200-disk-0", "  cache 1073741824 12.00\n"),
+		}, -1},
+		"inactive thin LV": {"local-lvm:vm-200-disk-0", []step{
+			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
+			lvs("/dev/pve/vm-200-disk-0", "  thin 103079215104 \n"),
 		}, -1},
 		"device that is not an LV": {"rbd:vm-200-disk-0", []step{
 			path("rbd:vm-200-disk-0", "/dev/rbd/pool/vm-200-disk-0"),
