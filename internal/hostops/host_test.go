@@ -210,13 +210,26 @@ func TestVolumeUsed(t *testing.T) {
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
 			{remote("qemu-img"), runtest.Response{Code: 1, Stderr: "Could not open"}},
 		}, -1},
+		"qcow2 file with an external data file": {"local:200/vm-200-disk-0.qcow2", []step{
+			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
+			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", `{"format": "qcow2", "format-specific": {"type": "qcow2", "data": {"data-file": "vm-200-disk-0.data"}}}`),
+		}, -1},
+		// A vmdk can keep its data in extent files next to a small
+		// descriptor; only formats known to hold all their data are measured.
+		"vmdk file": {"local:200/vm-200-disk-0.vmdk", []step{
+			path("local:200/vm-200-disk-0.vmdk", "/var/lib/vz/images/200/vm-200-disk-0.vmdk"),
+		}, -1},
 		"raw file: no backing chain to check": {"local:200/vm-200-disk-0.raw", []step{
 			path("local:200/vm-200-disk-0.raw", "/var/lib/vz/images/200/vm-200-disk-0.raw"),
 			stat("/var/lib/vz/images/200/vm-200-disk-0.raw", "2048:512:81a4\n"),
 		}, 1 << 20},
 		"directory (subvol)": {"local-zfs:subvol-105-disk-0", []step{
 			path("local-zfs:subvol-105-disk-0", "/rpool/data/subvol-105-disk-0"),
-			stat("/rpool/data/subvol-105-disk-0", "9:512:41ed\n"),
+		}, -1},
+		"raw name that is not a regular file": {"local:200/vm-200-disk-0.raw", []step{
+			path("local:200/vm-200-disk-0.raw", "/var/lib/vz/images/200/vm-200-disk-0.raw"),
+			stat("/var/lib/vz/images/200/vm-200-disk-0.raw", "9:512:41ed\n"),
 		}, -1},
 		"path that is not local": {"iscsi:0.0.0.scsi-example", []step{
 			path("iscsi:0.0.0.scsi-example", "iscsi://192.0.2.10/iqn.2026-11.org.example:t/0"),

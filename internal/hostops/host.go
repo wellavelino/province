@@ -209,9 +209,10 @@ func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 
 // VolumeUsed implements Host. pvesm resolves the volume to a path, and the
 // path says how to measure it: a zvol through zfs, any other device as a
-// thin LV through lvs, a regular file by its allocated blocks. Anything
+// thin LV through lvs, a raw or qcow2 file by its allocated blocks. Anything
 // else is an error, and the caller then counts the disk at its allocated
-// size: a linked clone, a directory, a remote path, and an LV that is not
+// size: a linked clone, a qcow2 file that depends on another file, any
+// other file format, a directory, a remote path, and an LV that is not
 // an active thin LV (thick, cache, an old-style snapshot, or an inactive
 // thin LV, which reports no data percent). The PVE API reports no used
 // figure for these volumes, so the host is asked.
@@ -279,13 +280,19 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		pct = math.Min(pct+0.01, 100)
 		return int64(math.Ceil(float64(size) * pct / 100)), nil
 	case strings.HasPrefix(path, "/"):
+		// Only formats known to keep all their data in this one file are
+		// measured: raw, and qcow2 checked below. A vmdk, for one, can keep
+		// its data in extent files next to a small descriptor.
+		qcow2 := strings.HasSuffix(path, ".qcow2")
+		if !qcow2 && !strings.HasSuffix(path, ".raw") {
+			return 0, fmt.Errorf("%s on %s: only raw and qcow2 files are measured", path, h.Target.Dest)
+		}
 		// Allocated blocks, not the apparent size: a sparse raw file or a
 		// preallocated qcow2 is as long as the whole disk. On a compressing
 		// filesystem the blocks undercount the data, as zfs referenced
 		// would; the dump is compressed too, and the margin on top covers
-		// the difference.
-		// %f is the raw mode in hex; %F would be the file type in the
-		// host's language.
+		// the difference. %f is the raw mode in hex; %F would be the file
+		// type in the host's language.
 		if err := h.run(ctx, &out, "stat", "-L", "-c", "%b:%B:%f", "--", path); err != nil {
 			return 0, err
 		}
@@ -299,25 +306,33 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		if err1 != nil || err2 != nil || err3 != nil || blocks < 0 || bsize <= 0 || mode&0o170000 != 0o100000 {
 			return bad("stat")
 		}
-		if strings.HasSuffix(path, ".qcow2") {
-			// A qcow2 file can hold only the changes on top of a backing
-			// image, and PVE 9's external snapshots chain one without
-			// putting base- in the volid. The dump carries the whole chain,
-			// so a file with a backing image is not measured. -U reads the
-			// header of a running VM's image without taking its lock.
+		if qcow2 {
+			// A qcow2 file can depend on other files: a backing image (PVE
+			// 9's external snapshots chain one without putting base- in the
+			// volid) or an external data file. The dump carries them, this
+			// file's blocks do not, so such a file is not measured. -U reads
+			// the header of a running VM's image without taking its lock.
 			out.Reset()
 			if err := h.run(ctx, &out, "qemu-img", "info", "-U", "--output=json", path); err != nil {
 				return 0, err
 			}
 			var info struct {
-				Format  string `json:"format"`
-				Backing string `json:"backing-filename"`
+				Format   string `json:"format"`
+				Backing  string `json:"backing-filename"`
+				Specific struct {
+					Data struct {
+						DataFile string `json:"data-file"`
+					} `json:"data"`
+				} `json:"format-specific"`
 			}
 			if err := json.Unmarshal(out.Bytes(), &info); err != nil || info.Format != "qcow2" {
 				return bad("qemu-img info")
 			}
 			if info.Backing != "" {
 				return 0, fmt.Errorf("%s on %s has a backing image (%s): its used bytes leave out the chain", path, h.Target.Dest, info.Backing)
+			}
+			if info.Specific.Data.DataFile != "" {
+				return 0, fmt.Errorf("%s on %s keeps its data in %s: its used bytes leave it out", path, h.Target.Dest, info.Specific.Data.DataFile)
 			}
 		}
 		return blocks * bsize, nil
