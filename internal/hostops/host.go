@@ -213,8 +213,9 @@ func (h *SSHHost) Destroy(ctx context.Context, typ string, vmid int) error {
 // else is an error, and the caller then counts the disk at its allocated
 // size: a linked clone, a qcow2 file that depends on another file, any
 // other file format, a directory, a remote path, and an LV that is not
-// an active thin LV (thick, cache, an old-style snapshot, or an inactive
-// thin LV, which reports no data percent). The PVE API reports no used
+// an active thin LV with no origin (thick, cache, an old-style snapshot,
+// an inactive thin LV, which reports no data percent, or a thin LV with
+// an origin). The PVE API reports no used
 // figure for these volumes, so the host is asked.
 func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 	// A linked clone named after its base (base-9000-disk-0/vm-200-disk-0
@@ -261,7 +262,9 @@ func (h *SSHHost) VolumeUsed(ctx context.Context, volid string) (int64, error) {
 		// a cache LV or an old-style snapshot fills it with something else,
 		// and a thick LV prints none. A thin LV with an origin (PVE's linked
 		// clones on LVM-thin, or an external origin) shares blocks with it,
-		// and the dump reads those too: not measured.
+		// and the dump reads those too: not measured. A disk rolled back to
+		// an LVM-thin snapshot may also have one, and then counts at its
+		// allocated size too: safe, if cautious.
 		f := strings.Split(strings.TrimSpace(out.String()), "|")
 		if len(f) != 4 || f[0] != "thin" || f[2] == "" {
 			return bad("lvs")

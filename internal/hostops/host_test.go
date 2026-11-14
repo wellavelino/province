@@ -194,6 +194,12 @@ func TestVolumeUsed(t *testing.T) {
 			path("local-lvm:vm-200-disk-0", "/dev/pve/vm-200-disk-0"),
 			lvs("/dev/pve/vm-200-disk-0", "  thin|103079215104|10.00|base-9000-disk-0\n"),
 		}, -1},
+		// segtype prints one row per segment, so a multi-segment LV gives
+		// several rows; none of them is the whole volume.
+		"multi-segment LV": {"vg:vm-200-disk-0", []step{
+			path("vg:vm-200-disk-0", "/dev/vg/vm-200-disk-0"),
+			lvs("/dev/vg/vm-200-disk-0", "  linear|1073741824||\n  linear|1073741824||\n"),
+		}, -1},
 		"device that is not an LV": {"rbd:vm-200-disk-0", []step{
 			path("rbd:vm-200-disk-0", "/dev/rbd/pool/vm-200-disk-0"),
 			{remote("lvs"), runtest.Response{Code: 5, Stderr: "Failed to find logical volume"}},
@@ -224,8 +230,6 @@ func TestVolumeUsed(t *testing.T) {
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
 			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", fixture(t, "qemu-img-info-data-file.json")),
 		}, -1},
-		// A vmdk can keep its data in extent files next to a small
-		// descriptor; only formats known to hold all their data are measured.
 		"qemu-img says another format": {"local:200/vm-200-disk-0.qcow2", []step{
 			path("local:200/vm-200-disk-0.qcow2", "/var/lib/vz/images/200/vm-200-disk-0.qcow2"),
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
@@ -236,6 +240,8 @@ func TestVolumeUsed(t *testing.T) {
 			stat("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "8:512:81a4\n"),
 			qemuImg("/var/lib/vz/images/200/vm-200-disk-0.qcow2", "image: vm-200-disk-0.qcow2\n"),
 		}, -1},
+		// A vmdk can keep its data in extent files next to a small
+		// descriptor; only formats known to hold all their data are measured.
 		"vmdk file": {"local:200/vm-200-disk-0.vmdk", []step{
 			path("local:200/vm-200-disk-0.vmdk", "/var/lib/vz/images/200/vm-200-disk-0.vmdk"),
 		}, -1},
