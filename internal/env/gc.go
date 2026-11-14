@@ -100,6 +100,10 @@ type GCResult struct {
 	Failed int     `json:"failed"`
 }
 
+// errGCSkip stops GC's destroy of an env that is no longer expired or is
+// protected now.
+var errGCSkip = errors.New("env gc: skip")
+
 // GC destroys every expired env that is not protected, through Destroy,
 // going on past failures. Without yes it refuses, naming what it would
 // destroy, unless there is nothing to destroy. With failures it returns
@@ -141,7 +145,25 @@ func (m *Manager) GC(ctx context.Context, yes bool) (*GCResult, error) {
 			continue
 		}
 		m.logf("destroying expired env %s (expired %s)", e.Name, e.ExpiresAt.Format(time.RFC3339))
-		d, err := m.Destroy(ctx, e.Name, true)
+		// The record may have changed since it was selected: an
+		// `env create --apply --ttl` renewed it, or `env protect` ran.
+		var skip string
+		d, err := m.destroy(ctx, e.Name, func(md *Metadata) error {
+			switch {
+			case !md.expired(m.Now()):
+				skip = "not expired"
+			case md.Protected:
+				skip = "protected"
+			default:
+				return nil
+			}
+			return errGCSkip
+		})
+		if errors.Is(err, errGCSkip) {
+			e.Outcome, e.Reason = GCSkipped, skip
+			m.logf("info: env gc: %s is %s now; skipped", e.Name, skip)
+			continue
+		}
 		if err != nil {
 			e.Outcome, e.Error, e.Code, e.GuestOutput = GCFailed, err.Error(), errs.KindOf(err), errs.GuestOutput(err)
 			res.Failed++

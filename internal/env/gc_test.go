@@ -211,6 +211,46 @@ func TestGCDestroysExpiredAndContinuesPastAFailure(t *testing.T) {
 	}
 }
 
+// An env renewed (or protected) after GC selected it, while an earlier
+// destroy ran, is skipped: GC rechecks the record before destroying.
+func TestGCRechecksBeforeEachDestroy(t *testing.T) {
+	r := newRig(t)
+	clock(r)
+	expiredEnvs(t, r)
+	seed(t, r, Metadata{Name: "c", Host: "pve1", Node: "pve1", VMID: 109, Status: StatusBootstrapped, ExpiresAt: fixedNow.Add(-time.Minute)})
+	r.clients["pve1"].Guests = append(r.clients["pve1"].Guests, proxmox.Guest{VMID: 109, Name: "c", Status: "stopped", Type: proxmox.TypeLXC})
+	r.tofu.Fail = func(c string) error {
+		if c == "Destroy "+r.dir("a") {
+			b := r.metadata(t, "b")
+			b.ExpiresAt = fixedNow.Add(time.Hour)
+			cm := r.metadata(t, "c")
+			cm.Protected = true
+			seed(t, r, *b, *cm)
+		}
+		return nil
+	}
+	res, err := r.m.GC(ctx, true)
+	if err != nil {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	got := map[string]GCEnv{}
+	for _, e := range res.Envs {
+		got[e.Name] = e
+	}
+	if got["a"].Outcome != GCDestroyed || got["b"].Outcome != GCSkipped || got["b"].Reason != "not expired" ||
+		got["c"].Outcome != GCSkipped || got["c"].Reason != "protected" || res.Failed != 0 {
+		t.Fatalf("result: %+v", res)
+	}
+	if exists(r, "a") || !exists(r, "b") || !exists(r, "c") {
+		t.Fatal("wrong state dirs removed")
+	}
+	for _, e := range r.j.Entries() {
+		if strings.Contains(e, r.dir("b")) || strings.Contains(e, r.dir("c")) {
+			t.Errorf("renewed or protected env touched: %s", e)
+		}
+	}
+}
+
 func TestGCReportsDestroyRefusals(t *testing.T) {
 	r := newRig(t)
 	clock(r)

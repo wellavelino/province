@@ -3,6 +3,7 @@ package env
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -17,15 +18,63 @@ import (
 	"github.com/wellavelino/province/internal/incus"
 )
 
-// withSleeps records the rig's sleeps instead of sleeping.
+// withSleeps records the rig's sleeps instead of sleeping, each moving
+// the rig's clock on by its duration.
 func withSleeps(t *testing.T, r *rig) (sleeps *[]time.Duration) {
 	t.Helper()
 	sleeps = &[]time.Duration{}
+	now := clock(r)
 	r.m.Sleep = func(_ context.Context, d time.Duration) error {
 		*sleeps = append(*sleeps, d)
+		*now = now.Add(d)
 		return nil
 	}
 	return sleeps
+}
+
+// slowGuest's execs fail and each takes took on the clock; it records the
+// time each exec's context allowed.
+type slowGuest struct {
+	guest
+	now     *time.Time
+	took    time.Duration
+	allowed []time.Duration
+}
+
+func (g *slowGuest) Exec(ctx context.Context, _ io.Reader, _ io.Writer, _ ...string) error {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("exec without a deadline")
+	}
+	g.allowed = append(g.allowed, time.Until(d).Round(time.Second))
+	*g.now = g.now.Add(g.took)
+	return errors.New("Error: VM agent isn't currently running")
+}
+
+// The wait counts exec time, not only the pauses, and bounds each exec by
+// the time left.
+func TestWaitAgentCountsExecTime(t *testing.T) {
+	r := newRig(t)
+	g := &slowGuest{now: clock(r), took: 3 * time.Second}
+	var sleeps []time.Duration
+	r.m.Sleep = func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		*g.now = g.now.Add(d)
+		return nil
+	}
+	r.m.AgentTimeout = 10 * time.Second
+	err := r.m.waitAgent(ctx, g, &Metadata{Name: "api"}, config.Host{Remote: "box"})
+	if err == nil || !strings.Contains(err.Error(), "did not answer within 10s") {
+		t.Fatalf("err = %v", err)
+	}
+	// Tries at 0 s (until 3), 5 (until 8), 10 (until 13): the last
+	// pause is cut to the 2 s left.
+	if !slices.Equal(sleeps, []time.Duration{2 * time.Second, 2 * time.Second}) {
+		t.Errorf("sleeps = %v", sleeps)
+	}
+	if !slices.Equal(g.allowed, []time.Duration{10 * time.Second, 5 * time.Second, time.Second}) {
+		t.Errorf("exec timeouts = %v", g.allowed)
+	}
 }
 
 func TestIncusCreateVMWaitsForTheAgent(t *testing.T) {

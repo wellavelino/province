@@ -25,9 +25,20 @@ func (m *Manager) Destroy(ctx context.Context, name string, yes bool) (*DestroyR
 	if !yes {
 		return nil, errs.Refusedf("env destroy %s deletes its guest (container or VM) and disk: pass --yes", name)
 	}
+	return m.destroy(ctx, name, nil)
+}
+
+// destroy is Destroy with yes. A non-nil check runs on the env's record as
+// loaded, before anything is changed; its error stops the destroy.
+func (m *Manager) destroy(ctx context.Context, name string, check func(*Metadata) error) (*DestroyResult, error) {
 	md, err := m.load(name)
 	if err != nil {
 		return nil, err
+	}
+	if check != nil {
+		if err := check(md); err != nil {
+			return nil, err
+		}
 	}
 	if err := md.refuseProtected(); err != nil {
 		return nil, err

@@ -399,7 +399,8 @@ const (
 
 // waitAgent runs `true` in g until it succeeds: a VM's agent, which every
 // exec goes through, answers some seconds after the VM boots. It gives up
-// after m.AgentTimeout with the last exec error.
+// m.AgentTimeout after it started, exec time included, with the last exec
+// error; each exec gets only the time left.
 func (m *Manager) waitAgent(ctx context.Context, g guest, md *Metadata, h config.Host) error {
 	timeout := m.AgentTimeout
 	if timeout <= 0 {
@@ -409,16 +410,28 @@ func (m *Manager) waitAgent(ctx context.Context, g guest, md *Metadata, h config
 	if sleep == nil {
 		sleep = sleepCtx
 	}
+	now := m.Now
+	if now == nil {
+		now = time.Now
+	}
+	deadline := now().Add(timeout)
 	m.logf("waiting for the guest agent in %s (%s)", md.Name, md.guestRef(h))
-	for waited := time.Duration(0); ; waited += agentPoll {
-		err := g.Exec(ctx, nil, nil, "true")
+	for {
+		// At least a second, so the try at the deadline is a real one.
+		execCtx, cancel := context.WithTimeout(ctx, max(deadline.Sub(now()), time.Second))
+		err := g.Exec(execCtx, nil, nil, "true")
+		cancel()
 		if err == nil {
 			return nil
 		}
-		if waited >= timeout {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		left := deadline.Sub(now())
+		if left <= 0 {
 			return fmt.Errorf("the guest agent in VM %s did not answer within %s (is it running? see `incus info %s:%s`): %w", md.Name, timeout, h.Remote, md.Name, err)
 		}
-		if err := sleep(ctx, agentPoll); err != nil {
+		if err := sleep(ctx, min(agentPoll, left)); err != nil {
 			return err
 		}
 	}
