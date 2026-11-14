@@ -48,11 +48,14 @@ type Incus struct {
 // IncusACLAddress is the isolated env's network ACL in the generated config.
 const IncusACLAddress = "incus_network_acl.isolated"
 
-// IsolatedLAN is what an isolated env cannot reach: private, link-local
-// IPv4 and unique-local IPv6 ranges. IPv6 link-local (fe80::/10) and
-// multicast stay reachable, so neighbour discovery and router
-// advertisements keep working.
-var IsolatedLAN = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7"}
+// IsolatedLAN is what an isolated env cannot reach: private and
+// link-local IPv4, unique-local and link-local IPv6 ranges. Link-local is
+// in it because the Incus host answers on its fe80:: address on the
+// bridge. IPv6 multicast (ff00::/8) stays reachable, for router
+// solicitations and DHCPv6; neighbour solicitations and advertisements to
+// link-local addresses still flow, because Incus accepts them on the NIC
+// before any ACL rule.
+var IsolatedLAN = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"}
 
 // TailnetRanges are the tailnet's addresses, allowed explicitly. They lie
 // outside IsolatedLAN except fd7a:115c:a1e0::/48, which is inside fc00::/7.
@@ -71,7 +74,8 @@ var isolatedAllowed = []string{
 	"172.32.0.0-192.167.255.255",
 	"192.169.0.0-255.255.255.255",
 	"::-fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-	"fe00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+	"fe00::-fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+	"fec0::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 }
 
 type incusFile struct {
@@ -113,7 +117,11 @@ type inst struct {
 	Running     bool           `json:"running"`
 	Config      map[string]lit `json:"config"`
 	Device      []device       `json:"device"`
-	DependsOn   []expr         `json:"depends_on,omitempty"`
+	// Profiles is nil (omitted: the provider applies the default profile)
+	// or, for an isolated env, empty: no profile, so no NIC from one
+	// bypasses the ACL.
+	Profiles  *[]lit `json:"profiles,omitempty"`
+	DependsOn []expr `json:"depends_on,omitempty"`
 }
 
 type device struct {
@@ -143,6 +151,7 @@ func GenerateIncus(i Incus) ([]byte, error) {
 	}
 	var acls map[string]networkACL
 	var dependsOn []expr
+	var profiles *[]lit
 	if i.Isolated {
 		if i.Network == "" || len(i.Gateways) == 0 {
 			return nil, errors.New("tfgen: an isolated env needs a network and its gateway addresses")
@@ -154,6 +163,10 @@ func GenerateIncus(i Incus) ([]byte, error) {
 		nic["security.acls"] = acl.Name
 		nic["security.acls.default.egress.action"] = "drop"
 		nic["security.acls.default.ingress.action"] = "allow"
+		// A NIC the default profile adds (eth1 on the LAN, say) would not
+		// carry the ACL. The env gets no profile: its root disk and eth0
+		// are declared here, so it needs none.
+		profiles = &[]lit{}
 	}
 	if i.TunDevice && !i.VM {
 		devices = append(devices, device{Name: "tun", Type: "unix-char", Properties: map[string]lit{"source": "/dev/net/tun", "path": "/dev/net/tun"}})
@@ -177,6 +190,7 @@ func GenerateIncus(i Incus) ([]byte, error) {
 			Running:     true,
 			Config:      cfg,
 			Device:      devices,
+			Profiles:    profiles,
 			DependsOn:   dependsOn,
 		}}, ACL: acls},
 		Output: map[string]output{"name": {Value: expr("${" + IncusResourceAddress + ".name}")}},

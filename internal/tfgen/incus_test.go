@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -126,7 +127,8 @@ func TestIncusIsolated(t *testing.T) {
 					Name       string            `json:"name"`
 					Properties map[string]string `json:"properties"`
 				} `json:"device"`
-				DependsOn []string `json:"depends_on"`
+				DependsOn []string  `json:"depends_on"`
+				Profiles  *[]string `json:"profiles"`
 			} `json:"incus_instance"`
 			ACL map[string]struct {
 				Name    string `json:"name"`
@@ -150,6 +152,10 @@ func TestIncusIsolated(t *testing.T) {
 	env := m.Resource.Instance["env"]
 	if len(env.DependsOn) != 1 || env.DependsOn[0] != IncusACLAddress {
 		t.Errorf("depends_on = %v", env.DependsOn)
+	}
+	// No profile: a NIC from the default profile would not carry the ACL.
+	if env.Profiles == nil || len(*env.Profiles) != 0 {
+		t.Errorf("profiles = %v, want []", env.Profiles)
 	}
 	nic := env.Device[1]
 	want := map[string]string{"name": "eth0", "network": "incusbr0", "security.acls": "province-demo",
@@ -182,8 +188,8 @@ func TestIncusIsolated(t *testing.T) {
 			t.Errorf("isolated without network or gateways generated: %+v", bad)
 		}
 	}
-	if b, _ := GenerateIncus(incusBase()); strings.Contains(string(b), "incus_network_acl") || strings.Contains(string(b), "depends_on") {
-		t.Error("ACL generated for an env that is not isolated")
+	if b, _ := GenerateIncus(incusBase()); strings.Contains(string(b), "incus_network_acl") || strings.Contains(string(b), "depends_on") || strings.Contains(string(b), "profiles") {
+		t.Error("ACL or profiles generated for an env that is not isolated")
 	}
 }
 
@@ -230,7 +236,13 @@ func TestIsolatedAllowedIsComplement(t *testing.T) {
 			t.Fatalf("ranges end before %v", next)
 		}
 	}
-	for _, keep := range []string{"fe80::1", "ff02::2", "100.100.100.100", "8.8.8.8"} {
+	for _, lan := range []string{"fe80::1", "febf::1", "fd00::1", "169.254.1.1"} {
+		a := netip.MustParseAddr(lan)
+		if !slices.ContainsFunc(IsolatedLAN, func(c string) bool { return netip.MustParsePrefix(c).Contains(a) }) {
+			t.Errorf("%s is not in the LAN ranges", lan)
+		}
+	}
+	for _, keep := range []string{"ff02::2", "ff02::1:2", "fec0::1", "100.100.100.100", "8.8.8.8"} {
 		a := netip.MustParseAddr(keep)
 		for _, c := range IsolatedLAN {
 			if netip.MustParsePrefix(c).Contains(a) {

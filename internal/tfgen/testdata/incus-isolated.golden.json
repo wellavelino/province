@@ -47,6 +47,7 @@
             }
           }
         ],
+        "profiles": [],
         "depends_on": [
           "incus_network_acl.isolated"
         ]
@@ -62,7 +63,7 @@
             "description": "internet: everything outside the LAN ranges",
             "action": "allow",
             "state": "enabled",
-            "destination": "0.0.0.0-9.255.255.255,11.0.0.0-169.253.255.255,169.255.0.0-172.15.255.255,172.32.0.0-192.167.255.255,192.169.0.0-255.255.255.255,::-fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff,fe00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+            "destination": "0.0.0.0-9.255.255.255,11.0.0.0-169.253.255.255,169.255.0.0-172.15.255.255,172.32.0.0-192.167.255.255,192.169.0.0-255.255.255.255,::-fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff,fe00::-fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff,fec0::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
           },
           {
             "description": "tailnet",

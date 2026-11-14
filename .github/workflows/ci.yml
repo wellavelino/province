@@ -119,7 +119,7 @@ jobs:
           # the udev rule the runner user would need. Without /dev/kvm the
           # script skips the VM and says so.
           ls -l /dev/kvm || echo "no /dev/kvm on this runner"
-          incus query /1.0 | jq -r '"drivers: " + .environment.driver'
+          incus query local:/1.0 | jq -r '"drivers: " + .environment.driver'
           incus list local:
       # The Tailscale secrets reach only this step, and only on pushes to
       # main and on pull requests from branches of this repo (whose authors

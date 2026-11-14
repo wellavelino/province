@@ -90,11 +90,11 @@ With `isolated: true` on a host, its envs reach the internet and the tailnet but
 
 What the env may send (egress; the NIC drops everything else):
 
-- anything outside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` and `fc00::/7`: the internet. IPv6 link-local and multicast stay open, so neighbour discovery and router advertisements work;
+- anything outside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7` and `fe80::/10`: the internet. IPv6 link-local is closed because the Incus host answers on its own `fe80::` address on the bridge. Multicast stays open, for router solicitations and DHCPv6, and Incus itself accepts neighbour solicitations and advertisements on the NIC before any ACL rule, so IPv6 neighbour discovery still works;
 - the tailnet ranges `100.64.0.0/10` and `fd7a:115c:a1e0::/48`;
 - DNS (UDP and TCP 53) and DHCP (UDP 67 and 547) to the network's own addresses, its `ipv4.address` and `ipv6.address`, which province reads before tofu runs.
 
-Incus applies drop rules before allow rules whatever their order, so the ACL is an allowlist with a default drop rather than a drop list with exceptions. Ingress stays open (default action `allow`): Tailscale and SSH over the tailnet work as before. Replies to connections the env opened always flow.
+Incus applies drop rules before allow rules whatever their order, so the ACL is an allowlist with a default drop rather than a drop list with exceptions. The env also gets no profile (`profiles = []`): a NIC that the project's default profile adds, such as an `eth1` on the LAN, would not carry the ACL. Its root disk and eth0 are declared in the tofu config, so it needs none, but anything else the default profile sets (cloud-init, extra devices) does not reach an isolated env. Ingress stays open (default action `allow`): Tailscale and SSH over the tailnet work as before. Replies to connections the env opened always flow.
 
 Before tofu runs, `env create` checks, and refuses with exit 2 otherwise, that:
 
@@ -105,11 +105,11 @@ Before tofu runs, `env create` checks, and refuses with exit 2 otherwise, that:
 Limits:
 
 - The ACL sits on the env's own NIC, so it also covers other instances on the same bridge: their addresses are in a private range too.
-- Turning `isolated` on for a host affects envs created or re-applied (`env create <name> --apply`) after the change; existing envs keep the config they were applied with until then. `env show` says whether an env is isolated.
+- Turning `isolated` on for a host affects envs created after the change. A bootstrapped env keeps the config it was applied with: `env create` refuses it ("already exists"), so destroy it (`env destroy <name> --yes`, after `env protect <name> --off` if it is protected) and create it again. An env that is only planned or failed picks the change up on `env create <name> --apply`. `env show` says whether an env is isolated.
 - The env uses the bridge's DNS server (dnsmasq on the Incus host). A recipe that points DNS at a resolver on the LAN breaks name resolution; a public resolver works.
 - The tailnet ranges are allowed on eth0 too. The env's own Tailscale traffic does not need that (it leaves eth0 encrypted, to public addresses), but if the Incus host itself runs Tailscale, a packet the env sends to a tailnet address on eth0 can be routed by the host into its own tailnet connection, under the host's identity. Keep the host's tailnet grants narrow, or do not run Tailscale on a host with isolated envs.
 - Tailscale cannot connect directly to peers on the LAN (it falls back to their public endpoints or a DERP relay), so a laptop on the same LAN reaches the env a little more slowly.
-- If the network is changed later (a new `ipv4.address`), re-run `env create <name> --apply` so the ACL follows.
+- If the network is changed later (a new `ipv4.address`), the ACL still allows DNS and DHCP to the old address: destroy the env and create it again so the ACL follows.
 
 ## Limits
 

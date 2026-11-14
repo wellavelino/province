@@ -103,8 +103,8 @@ export PROVINCE_CONFIG="$work/province.yaml"
 vkind=lxc
 if [ ! -e /dev/kvm ]; then
   skip "VM: /dev/kvm is absent on this machine; V is a container instead"
-elif ! incus query /1.0 | jq -e '.environment.driver | test("qemu")' >/dev/null; then
-  skip "VM: Incus reports no qemu driver ($(incus query /1.0 | jq -r .environment.driver)); V is a container instead"
+elif ! incus query local:/1.0 | jq -e '.environment.driver | test("qemu")' >/dev/null; then
+  skip "VM: Incus reports no qemu driver ($(incus query local:/1.0 | jq -r .environment.driver)); V is a container instead"
 else
   vkind=vm
 fi
@@ -153,9 +153,13 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     run 0 "$province" env show "$n" --json
     check '.live_status == "running" and .status == "bootstrapped"' "$n show"
   done
-  [ "$(incus query "/1.0/instances/$v" | jq -r .type)" = "$([ "$vkind" = vm ] && echo virtual-machine || echo container)" ] ||
+  [ "$(incus query "local:/1.0/instances/$v" | jq -r .type)" = "$([ "$vkind" = vm ] && echo virtual-machine || echo container)" ] ||
     fail "V is not a $vkind on the server"
   incus network acl show "local:province-$c" >/dev/null || fail "ACL province-$c is missing"
+  # No profile on C: a NIC from one would not carry the ACL.
+  incus query "local:/1.0/instances/$c" |
+    jq -e '.profiles == [] and ([.expanded_devices | to_entries[] | select(.value.type == "nic") | .key] == ["eth0"])' >/dev/null ||
+    fail "C has a profile or a NIC other than eth0: $(incus query "local:/1.0/instances/$c" | jq -c '{profiles, expanded_devices}')"
   run 0 "$province" env show "$c" --json
   check '.isolated' "C show isolated"
 
